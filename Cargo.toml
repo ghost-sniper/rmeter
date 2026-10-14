@@ -1,5 +1,34 @@
+[package]
+name = "rmeter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Script-driven load testing library and optional command-line runner"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "rmeter"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = []
+cli = ["dep:clap"]
+
+[dependencies]
+rmeter-core = { path = "rmeter-core" }
+rmeter-component = { path = "rmeter-component" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"], optional = true }
+
 [workspace]
-members = ["rmeter-component","rmeter-core"]
+members = [".", "rmeter-component", "rmeter-core"]
 resolver = "2"
 
 [workspace.package]

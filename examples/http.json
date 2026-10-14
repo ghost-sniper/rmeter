@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "name": "HTTP JSON 断言示例",
+  "variables": {
+    "host": "127.0.0.1",
+    "port": "8080",
+    "enabled": "true"
+  },
+  "defaults": {
+    "request_timeout_ms": 5000
+  },
+  "groups": [
+    {
+      "name": "HTTP 用户",
+      "users": 1,
+      "iterations": 1,
+      "on_error": "continue",
+      "children": [
+        {
+          "type": "if",
+          "name": "启用检查",
+          "condition": "${enabled}",
+          "children": [
+            {
+              "type": "http_request",
+              "name": "查询状态",
+              "url": "http://${host}:${port}/status",
+              "assertions": [
+                {
+                  "name": "业务状态成功",
+                  "path": "$.code",
+                  "matcher": { "type": "equals", "expected": 0 }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
