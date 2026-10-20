@@ -3,7 +3,11 @@
 pub mod assertion;
 pub mod component;
 pub mod http;
+pub mod javascript;
 pub mod jdbc;
+mod post_processor;
+
+pub use javascript::{JavaScriptConfig, JavaScriptConfigError, JavaScriptSampler};
 
 pub use component::{ComponentCompiler, ComponentConfigError, ComponentNode, ComponentSampler};
 pub use jdbc::{

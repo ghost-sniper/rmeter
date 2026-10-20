@@ -6,6 +6,131 @@ HTTP/JDBC 组件编译、运行入口和可序列化事件。`rmeter-core` 负�
 
 完整的 IF、While、Loop 与 HTTP 采样测试见 [控制器集成示例](examples/controllers_http.md)。
 
+## JavaScript 脚本变量
+
+支持 Boa 执行同步 JavaScript（包含 ES6 语法），在 `children` 中添加节点：
+
+```json
+{
+  "type": "javascript",
+  "name": "生成变量",
+  "timeout_ms": 100,
+  "script": "const n = Number(vars.get('count') || '0') + 1; vars.set('count', String(n)); vars.set('requestId', `user-${ctx.userIndex}-${n}`);"
+}
+```
+
+后续 HTTP/JDBC 请求可以使用 `${requestId}`、`${count}` 等现有变量替换。
+完整可运行示例见 [javascript.json](examples/javascript.json)，该示例不访问网络。
+`--check` 会检查 JavaScript 语法和限制配置，但不会执行脚本。
+
+脚本 API：
+
+| API | 行为 |
+| --- | --- |
+| `vars.get(name)` | 读取字符串变量；不存在时返回 `undefined` |
+| `vars.set(name, value)` | 设置字符串变量；名称和值均须为字符串，数字使用 `String(value)`，对象使用 `JSON.stringify(value)` |
+| `vars.remove(name)` | 删除变量；返回是否存在该变量 |
+| `ctx.groupName` / `ctx.userIndex` / `ctx.iteration` / `ctx.lastSampleOk` | 只读执行信息，用户和迭代索引从 0 开始 |
+
+变量按虚拟用户隔离，在该用户后续节点和迭代间保留。每次执行使用新的
+JavaScript 上下文，JS 全局变量不保留；只有脚本成功后才提交 `vars` 的修改，
+抛异常、超过限制或取消时不提交。源码不会进行 `${...}` 替换，ES6 模板字符串可直接使用。
+不运行 Promise 后续任务，不提供 Node.js、浏览器或异步 I/O API。
+
+JavaScript 节点产生一条采样事件，参与采样数、成功率和耗时统计，更新
+`last_sample_ok`，失败遵循线程组 `on_error` 策略。事件保留节点名称；
+`response_code` 为 `OK`、`JavaScriptError`、`Timeout` 或基础设施错误 `Internal`，
+失败详情见 `response_message`。
+
+| 限制字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `timeout_ms` | 100 | 执行超时，允许 1–60000 毫秒 |
+| `loop_iteration_limit` | 100000 | Boa 单个循环的迭代上限，不能设为 0 或 `u64::MAX` |
+| `recursion_limit` | 128 | Boa 调用递归上限 |
+| `stack_size_limit` | 16384 | Boa VM 栈元素上限，不是字节数 |
+| `max_variable_bytes` | 1048576 | 所有变量名和值的 UTF-8 字节总量，包含初始变量 |
+
+其余限制值也必须大于 0，脚本源码最大 1 MiB。脚本在阻塞工作线程中顺序执行，
+不会占用 Tokio 异步调度线程。每 256 个 Boa VM 成本单位检查一次超时和取消信号，
+超时从工作线程开始执行时计算，不含排队等待。该超时是协作式的：解析、编译和
+单次内建操作（例如正则匹配）无法在内部被抢占。变量配额与 VM 栈限制也不等于
+JavaScript 总堆内存配额；当前实现不提供进程级硬超时或总内存隔离。
+
+## HTTP / JDBC 后置处理器
+
+在 `http_request` 或 `jdbc_request` 节点中配置 `post_processors`，可用 Boa
+读取当前采样器返回结果，并将提取值写入用户变量供后续请求使用：
+
+```json
+{
+  "type": "http_request",
+  "name": "登录",
+  "url": "http://localhost:8080/login",
+  "settings": {"save_response_body": false},
+  "max_post_processor_body_bytes": 8388608,
+  "post_processors": [
+    {
+      "type": "javascript",
+      "name": "提取 token",
+      "timeout_ms": 100,
+      "script": "if (!prev.success || prev.body === null) throw new Error(prev.bodyUnavailableReason || 'login failed'); vars.set('token', JSON.parse(prev.body).token);"
+    }
+  ]
+}
+```
+
+后续请求的 Header 可配置为 `[["Authorization", "Bearer ${token}"]]`。
+完整 HTTP → JDBC → HTTP 示例见 [post_processors.json](examples/post_processors.json)，
+运行前需准备登录接口和 PostgreSQL；`--check` 不连接这些服务，也不执行处理器。
+
+后置脚本支持与独立 JavaScript 节点相同的执行限制、`vars` 和 `ctx` API。
+另外注入只读 `prev`，它是所属采样器在断言检查后的结果快照：
+
+| 属性 | 含义 |
+| --- | --- |
+| `prev.label` | 当前采样名称，已展开变量 |
+| `prev.success` | 当前传输/查询和断言是否成功 |
+| `prev.responseCode` | HTTP 状态码或 JDBC 返回码；不可用时为 `null` |
+| `prev.responseMessage` | 返回说明或错误信息；不可用时为 `null` |
+| `prev.elapsedMs` | 采样耗时，单位毫秒，不包含后置处理时间 |
+| `prev.body` | 完整 UTF-8 返回体文本，空响应为 `""`；不可用时为 `null` |
+| `prev.bodyUnavailableReason` | 返回体不可用原因，正常时为 `null` |
+
+`prev` 仅在后置处理器中存在，不保存在用户上下文，不会泄漏到下一次采样或独立
+JavaScript 节点。`ctx.lastSampleOk` 仍表示引擎记录的上一次采样状态；
+后置处理器应使用 `prev.success` 判断当前采样。完整返回体不自动写入 `vars`，
+因此不占变量字节配额；通过 `vars.set` 保存的内容仍受配额限制。
+
+JDBC 的 `prev.body` 是现有查询结果 JSON，包含 `columns`、`rows`、
+`row_count` 和 `rows_affected`；每行数据按列顺序排列。例如：
+
+```javascript
+if (!prev.success || prev.body === null) throw new Error("查询失败");
+const data = JSON.parse(prev.body);
+const index = data.columns.indexOf("id");
+if (index < 0 || data.rows.length === 0) throw new Error("查询未返回 id");
+vars.set("userId", String(data.rows[0][index]));
+```
+
+HTTP 仅在存在后置处理器时额外收集完整输入，`max_post_processor_body_bytes`
+默认 8 MiB，必须大于 0，与断言输入及报告保存限制分别计算。关闭
+`save_response_body` 或降低 `max_saved_body_bytes` 不影响后置读取。
+HTTP 输入超限、读取不完整或不是有效 UTF-8 时，提供 `body: null` 和原因，
+不会将截断内容交给脚本；输入超限本身不额外标记失败，脚本可检查原因并抛错。
+响应仍会继续消费，以保持连接复用和字节统计。JDBC 复用受 `max_result_bytes`
+限制的完整查询结果，不受报告响应体保存开关影响。
+
+执行顺序为：请求/查询 → 断言 → 按数组顺序执行后置处理器 → 发送父采样事件
+并应用 `on_error`。失败的请求也执行后置处理器，但取消正在执行的采样会中止处理链。
+每个处理器单独提交变量；失败或超限时回滚该处理器修改、保留之前成功处理器的
+修改，并跳过剩余处理器。父采样标记为失败，保留原返回码、响应体和字节统计，
+在 `response_message` 中追加处理器名称及错误。处理器成功不能恢复父采样的失败状态。
+变量回滚不回滚已经执行的数据库操作。
+
+后置处理器不产生额外采样事件，不增加请求采样数；父采样的 `elapsed` 保留请求/
+查询耗时。处理器运行完成后，引擎再根据最终结果更新 `last_sample_ok`，因此
+后续 IF/While 和线程组错误策略可以观察到处理器失败。
+
 ## 选择编译目标
 
 默认不启用命令行依赖，生成 Rust 库：

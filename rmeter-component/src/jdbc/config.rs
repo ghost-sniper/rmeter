@@ -85,6 +85,8 @@ pub struct JdbcSamplerConfig {
     pub result_variable: Option<String>,
     pub row_count_variable: Option<String>,
     pub assertions: Vec<AssertionConfig>,
+    /// Run after assertions, with the complete result JSON even if report saving is off.
+    pub post_processors: Vec<crate::JavaScriptConfig>,
 }
 impl JdbcSamplerConfig {
     pub fn new(
@@ -105,10 +107,15 @@ impl JdbcSamplerConfig {
             result_variable: None,
             row_count_variable: None,
             assertions: Vec::new(),
+            post_processors: Vec::new(),
         }
     }
     pub fn add_assertion(&mut self, assertion: impl Into<AssertionConfig>) {
         self.assertions.push(assertion.into());
+    }
+
+    pub fn add_post_processor(&mut self, processor: crate::JavaScriptConfig) {
+        self.post_processors.push(processor);
     }
 }
 

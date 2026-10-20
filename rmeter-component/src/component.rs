@@ -1,6 +1,6 @@
 use crate::http::sampler::ClientOptions;
 use crate::{
-    HttpRequestConfig, HttpRequestDefaults, HttpSampler,
+    HttpRequestConfig, HttpRequestDefaults, HttpSampler, JavaScriptConfig, JavaScriptSampler,
     jdbc::{JdbcConnection, JdbcConnectionConfig, JdbcSampler, JdbcSamplerConfig},
 };
 use rmeter_core::{
@@ -17,10 +17,17 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub enum ComponentSampler {
+    JavaScript(Box<JavaScriptSampler>),
     Http(Box<HttpSampler>),
     Jdbc(Box<JdbcSampler>),
 }
 impl ComponentSampler {
+    pub fn as_javascript(&self) -> Option<&JavaScriptSampler> {
+        match self {
+            Self::JavaScript(value) => Some(value),
+            _ => None,
+        }
+    }
     pub fn as_http(&self) -> Option<&HttpSampler> {
         match self {
             Self::Http(value) => Some(value),
@@ -37,6 +44,7 @@ impl ComponentSampler {
 impl Sampler for ComponentSampler {
     async fn sample(&self, context: &mut UserContext) -> Result<SampleResult, SampleError> {
         match self {
+            Self::JavaScript(value) => value.sample(context).await,
             Self::Http(value) => value.sample(context).await,
             Self::Jdbc(value) => value.sample(context).await,
         }
@@ -44,6 +52,7 @@ impl Sampler for ComponentSampler {
 }
 #[derive(Debug, Clone)]
 pub enum ComponentNode {
+    JavaScript(JavaScriptConfig),
     HttpRequest(HttpRequestConfig),
     HttpDefaults(HttpRequestDefaults),
     JdbcConnection(JdbcConnectionConfig),
@@ -142,6 +151,12 @@ impl ComponentCompiler {
         let mut compiled = Vec::new();
         for node in nodes {
             compiled.push(match node {
+                ComponentNode::JavaScript(config) => {
+                    Node::Sample(ComponentSampler::JavaScript(Box::new(
+                        JavaScriptSampler::new(config)
+                            .map_err(|e| ComponentConfigError(e.to_string()))?,
+                    )))
+                }
                 ComponentNode::HttpDefaults(_) | ComponentNode::JdbcConnection(_) => continue,
                 ComponentNode::HttpRequest(config) => {
                     Node::Sample(ComponentSampler::Http(Box::new(

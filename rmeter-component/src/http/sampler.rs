@@ -27,6 +27,7 @@ pub struct HttpSampler {
     config: HttpRequestConfig,
     client: Client,
     assertions: Vec<ResponseAssertion>,
+    post_processors: Vec<crate::JavaScriptSampler>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,6 +60,13 @@ impl HttpSampler {
         clients: &mut HashMap<ClientOptions, Client>,
     ) -> Result<Self, HttpConfigError> {
         config.settings = defaults.merged_with(&config.settings).effective();
+        if config.max_post_processor_body_bytes == 0 {
+            return Err(HttpConfigError::new(
+                "max_post_processor_body_bytes must be positive",
+            ));
+        }
+        let post_processors = crate::post_processor::compile(&config.post_processors)
+            .map_err(|e| HttpConfigError::new(e.to_string()))?;
         let assertions = config
             .assertions
             .iter()
@@ -126,6 +134,7 @@ impl HttpSampler {
             config,
             client,
             assertions,
+            post_processors,
         };
         // Validate static requests before running. Values depending on user variables
         // are validated on each sample after expansion instead.
@@ -209,13 +218,26 @@ impl HttpSampler {
         }
     }
 
-    fn failed_before_response(&self, mut result: SampleResult, started: Instant) -> SampleResult {
+    async fn failed_before_response(
+        &self,
+        mut result: SampleResult,
+        started: Instant,
+        context: &mut UserContext,
+    ) -> SampleResult {
         result.elapsed = started.elapsed();
         self.apply_assertions(
             &mut result,
             None,
             Some("request failed before a complete response was available"),
         );
+        crate::post_processor::run(
+            &self.post_processors,
+            context,
+            &mut result,
+            None,
+            Some("request failed before a complete response was available"),
+        )
+        .await;
         result
     }
 }
@@ -247,14 +269,14 @@ impl Sampler for HttpSampler {
             Ok(label) => result.label = label,
             Err(error) => {
                 result.response_message = Some(format!("InvalidConfig: {error}"));
-                return Ok(self.failed_before_response(result, started));
+                return Ok(self.failed_before_response(result, started, context).await);
             }
         }
         let request = match self.build_request(&context.variables) {
             Ok(request) => request,
             Err(error) => {
                 result.response_message = Some(format!("InvalidConfig: {error}"));
-                return Ok(self.failed_before_response(result, started));
+                return Ok(self.failed_before_response(result, started, context).await);
             }
         };
         result.bytes_sent = request
@@ -265,7 +287,7 @@ impl Sampler for HttpSampler {
             Ok(response) => response,
             Err(error) => {
                 result.response_message = Some(describe_error(error));
-                return Ok(self.failed_before_response(result, started));
+                return Ok(self.failed_before_response(result, started, context).await);
             }
         };
         let status = response.status();
@@ -273,6 +295,8 @@ impl Sampler for HttpSampler {
         result.response_message = status.canonical_reason().map(str::to_owned);
         result.success = status.is_success() || status.is_redirection();
         let mut assertion_body = (!self.assertions.is_empty()).then(Vec::new);
+        let mut post_body = (!self.post_processors.is_empty()).then(Vec::new);
+        let mut post_body_overflow = false;
         let mut assertion_body_overflow = false;
         let mut response_complete = true;
         loop {
@@ -280,6 +304,21 @@ impl Sampler for HttpSampler {
                 Ok(Some(chunk)) => {
                     result.bytes_received =
                         result.bytes_received.saturating_add(chunk.len() as u64);
+                    if let Some(body) = &mut post_body
+                        && !post_body_overflow
+                    {
+                        if chunk.len()
+                            > self
+                                .config
+                                .max_post_processor_body_bytes
+                                .saturating_sub(body.len())
+                        {
+                            post_body_overflow = true;
+                            body.clear();
+                        } else {
+                            body.extend_from_slice(&chunk);
+                        }
+                    }
                     if let Some(body) = &mut result.response_body {
                         let available = self
                             .config
@@ -326,6 +365,28 @@ impl Sampler for HttpSampler {
             None
         };
         self.apply_assertions(&mut result, assertion_body.as_deref(), reason.as_deref());
+        let post_reason = if !response_complete {
+            Some("response body is incomplete".to_owned())
+        } else if post_body_overflow {
+            Some(format!(
+                "post processor input exceeds {} bytes",
+                self.config.max_post_processor_body_bytes
+            ))
+        } else {
+            None
+        };
+        crate::post_processor::run(
+            &self.post_processors,
+            context,
+            &mut result,
+            if post_reason.is_some() {
+                None
+            } else {
+                post_body.as_deref()
+            },
+            post_reason.as_deref(),
+        )
+        .await;
         Ok(result)
     }
 }

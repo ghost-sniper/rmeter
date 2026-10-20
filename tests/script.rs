@@ -427,9 +427,284 @@ async fn aborting_library_run_cancels_in_flight_http_and_closes_events() {
 
 #[test]
 fn shipped_example_compiles_without_network_requests() {
+    parse_script(include_str!("../examples/post_processors.json")).unwrap();
+    parse_script(include_str!("../examples/javascript.json")).unwrap();
     parse_script(include_str!("../examples/http.json")).unwrap();
     parse_script(include_str!("../examples/assertions.json")).unwrap();
     parse_script(include_str!("../examples/jdbc_postgresql.json")).unwrap();
+}
+
+#[test]
+fn post_processor_schema_checks_both_sampler_types_without_executing_scripts() {
+    for node in [
+        json!({"type":"http_request","name":"HTTP","url":"http://localhost/"}),
+        json!({"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT 1"}),
+    ] {
+        let mut source = json!({"version":1,"name":"post processors","jdbc_connections":[{
+            "name":"db","variable_name":"db","url":"postgresql://localhost/test"
+        }],"groups":[{"name":"g","children":[node]}]});
+        source["groups"][0]["children"][0]["post_processors"] = json!([
+            {"type":"javascript","name":"never execute during check","script":"throw new Error('check only');"}
+        ]);
+        parse_script(&source.to_string()).unwrap();
+        for bad in [
+            json!({"type":"http_request","name":"bad","script":""}),
+            json!({"type":"javascript","name":"syntax","script":"const = ;"}),
+            json!({"type":"javascript","name":"timeout","script":"","timeout_ms":0}),
+            json!({"type":"javascript","name":"unexpected","script":"","children":[]}),
+            json!({"type":"javascript","name":" ","script":""}),
+        ] {
+            let mut invalid = source.clone();
+            invalid["groups"][0]["children"][0]["post_processors"][0] = bad;
+            assert!(parse_script(&invalid.to_string()).is_err(), "{invalid}");
+        }
+    }
+    let source = json!({"version":1,"name":"bad limit","groups":[{"name":"g","children":[{
+        "type":"http_request","name":"HTTP","url":"http://localhost/","max_post_processor_body_bytes":0
+    }]}]});
+    assert!(parse_script(&source.to_string()).is_err());
+}
+
+#[tokio::test]
+async fn nested_post_processors_feed_next_requests_without_extra_samples_or_cross_user_state() {
+    let (login_url, login_server) = server(r#"{"token":"abc"}"#, 4).await;
+    let (work_url, work_server) = server(r#"{"token":"different"}"#, 4).await;
+    let source = json!({"version":1,"name":"post processors","groups":[{
+        "name":"g","users":2,"iterations":2,"children":[
+            {"type":"http_request","name":"login","url":login_url,"settings":{"save_response_body":false},
+                "post_processors":[
+                    {"type":"javascript","name":"extract","timeout_ms":5000,"script":
+                        "const n = Number(vars.get('count') || '0') + 1; if (n !== ctx.iteration + 1) throw new Error('state leak'); vars.set('count', String(n)); vars.set('token', `${JSON.parse(prev.body).token}:${ctx.userIndex}:${n}`);"},
+                    {"type":"javascript","name":"derive","timeout_ms":5000,"script":"vars.set('payload', `Bearer ${vars.get('token')}`);"}
+                ]},
+            {"type":"http_request","name":"work","url":work_url,"method":"POST","body":{"type":"text","value":"${payload}"},
+                "post_processors":[{"type":"javascript","name":"current result","timeout_ms":5000,
+                    "script":"if (prev.label !== 'work' || JSON.parse(prev.body).token !== 'different') throw new Error('stale prev');"}]}
+        ]
+    }]}).to_string();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let (result, samples) = within("nested post processors", async {
+        tokio::join!(run_script(&source, sender), async {
+            let mut samples = Vec::new();
+            while let Some(event) = receiver.recv().await {
+                if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                    assert!(
+                        sample.result.success,
+                        "{:?}",
+                        sample.result.response_message
+                    );
+                    assert!(sample.result.response_body.is_none());
+                    samples.push(sample);
+                }
+            }
+            samples
+        })
+    })
+    .await;
+    result.unwrap();
+    assert_eq!(samples.len(), 8);
+    within("login server", login_server).await.unwrap();
+    let requests = within("work server", work_server).await.unwrap();
+    let mut bodies: Vec<_> = requests
+        .iter()
+        .map(|r| r.split_once("\r\n\r\n").unwrap().1)
+        .collect();
+    bodies.sort();
+    assert_eq!(
+        bodies,
+        [
+            "Bearer abc:0:1",
+            "Bearer abc:0:2",
+            "Bearer abc:1:1",
+            "Bearer abc:1:2"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn failed_post_processors_apply_parent_error_policies_and_update_controller_state() {
+    for (policy, requests, expected_samples) in [
+        ("continue", 2, 4),
+        ("next_iteration", 2, 2),
+        ("stop_user", 1, 1),
+        ("stop_test", 1, 1),
+    ] {
+        let (url, server) = server(r#"{"token":"abc"}"#, requests).await;
+        let source = json!({"version":1,"name":"post errors","groups":[{
+            "name":"g","iterations":2,"on_error":policy,"children":[
+                {"type":"http_request","name":"parent","url":url,"post_processors":[
+                    {"type":"javascript","name":"broken","timeout_ms":5000,"script":"vars.set('partial','bad'); throw new Error('expected');"}
+                ]},
+                {"type":"if","name":"failure state","condition":{"type":"not","condition":{"type":"last_sample_ok"}},"children":[
+                    {"type":"javascript","name":"check rollback","timeout_ms":5000,"script":"if (vars.get('partial') !== undefined) throw new Error('partial commit');"}
+                ]}
+            ]
+        }]}).to_string();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (result, samples) = within("post processor error policy", async {
+            tokio::join!(run_script(&source, sender), async {
+                let mut samples = Vec::new();
+                while let Some(event) = receiver.recv().await {
+                    if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                        samples.push(sample);
+                    }
+                }
+                samples
+            })
+        })
+        .await;
+        result.unwrap();
+        assert_eq!(samples.len(), expected_samples, "{policy}");
+        assert_eq!(samples[0].result.label, "parent");
+        assert_eq!(samples[0].result.response_code.as_deref(), Some("200"));
+        assert!(!samples[0].result.success);
+        assert!(
+            samples[0]
+                .result
+                .response_message
+                .as_ref()
+                .unwrap()
+                .contains("broken")
+        );
+        if policy == "continue" {
+            assert!(samples[1].result.success);
+        }
+        within("error policy server", server).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn group_deadline_cancels_in_flight_post_processor_before_parent_event() {
+    let (url, server) = server("ok", 1).await;
+    let source = json!({"version":1,"name":"cancel post processor","groups":[{
+        "name":"g","max_duration_ms":200,"children":[{
+            "type":"http_request","name":"HTTP","url":url,"post_processors":[{
+                "type":"javascript","name":"endless","timeout_ms":60000,
+                "loop_iteration_limit":18446744073709551614u64,
+                "script":"vars.set('partial','bad'); while(true) {}"
+            }]
+        }]
+    }]})
+    .to_string();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let (result, summary) = within("post processor cancellation", async {
+        tokio::join!(run_script(&source, sender), async {
+            let mut summary = RunSummary::default();
+            while let Some(event) = receiver.recv().await {
+                summary.observe(&event);
+            }
+            summary
+        })
+    })
+    .await;
+    result.unwrap();
+    assert!(summary.finished);
+    assert_eq!(summary.samples, 0);
+    within("cancelled request server", server).await.unwrap();
+}
+
+#[test]
+fn javascript_configuration_is_checked_without_running_code() {
+    let base = json!({"version":1,"name":"JS","groups":[{"name":"g","children":[
+        {"type":"javascript","name":"compute","script":"throw new Error('must not execute during check')"}
+    ]}]});
+    parse_script(&base.to_string()).unwrap();
+    for (key, value) in [
+        ("script", json!("const = ;")),
+        ("timeout_ms", json!(0)),
+        ("timeout_ms", json!(60_001)),
+        ("loop_iteration_limit", json!(0)),
+        ("recursion_limit", json!(0)),
+        ("stack_size_limit", json!(0)),
+        ("max_variable_bytes", json!(0)),
+        ("unexpected", json!(true)),
+    ] {
+        let mut source = base.clone();
+        source["groups"][0]["children"][0][key] = value;
+        assert!(parse_script(&source.to_string()).is_err(), "{source}");
+    }
+}
+
+#[tokio::test]
+async fn javascript_variables_reach_http_and_remain_isolated_across_users_and_iterations() {
+    let (url, task) = server(r#"{"code":0}"#, 4).await;
+    let source = json!({"version":1,"name":"JS HTTP","variables":{"count":"0"},"groups":[{
+        "name":"g","users":2,"iterations":2,"children":[
+            {"type":"javascript","name":"compute","timeout_ms":5000,"script":
+                "const n = Number(vars.get('count')) + 1; vars.set('count', String(n)); vars.set('payload', `${ctx.userIndex}:${ctx.iteration}:${n}`);"},
+            {"type":"http_request","name":"HTTP","method":"POST","url":url,
+                "body":{"type":"text","value":"${payload}"}}
+        ]
+    }]}).to_string();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let (result, samples) = within("JS HTTP integration", async {
+        tokio::join!(run_script(&source, sender), async {
+            let mut samples = Vec::new();
+            while let Some(event) = receiver.recv().await {
+                if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                    assert!(
+                        sample.result.success,
+                        "{:?}",
+                        sample.result.response_message
+                    );
+                    samples.push(sample);
+                }
+            }
+            samples
+        })
+    })
+    .await;
+    result.unwrap();
+    assert_eq!(samples.len(), 8); // Each JS node is a sample too.
+    let requests = within("JS HTTP server", task).await.unwrap();
+    let mut bodies: Vec<_> = requests
+        .iter()
+        .map(|r| r.split_once("\r\n\r\n").unwrap().1)
+        .collect();
+    bodies.sort();
+    assert_eq!(bodies, ["0:0:1", "0:1:2", "1:0:1", "1:1:2"]);
+}
+
+#[tokio::test]
+async fn javascript_failures_follow_all_error_policies() {
+    for (policy, expected) in [
+        ("continue", 4),
+        ("next_iteration", 2),
+        ("stop_user", 1),
+        ("stop_test", 1),
+    ] {
+        let source = json!({"version":1,"name":"JS errors","groups":[{
+            "name":"g","iterations":2,"on_error":policy,"children":[
+                {"type":"javascript","name":"failure","timeout_ms":5000,
+                    "script":"vars.set('partial', 'bad'); throw new Error('expected failure');"},
+                {"type":"if","name":"failure state","condition":{"type":"not","condition":{"type":"last_sample_ok"}},"children":[
+                    {"type":"javascript","name":"after","timeout_ms":5000,
+                        "script":"if (vars.get('partial') !== undefined) throw new Error('partial write');"}
+                ]}
+            ]
+        }]}).to_string();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (result, samples) = within("JS errors", async {
+            tokio::join!(run_script(&source, sender), async {
+                let mut samples = Vec::new();
+                while let Some(event) = receiver.recv().await {
+                    if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                        samples.push(sample);
+                    }
+                }
+                samples
+            })
+        })
+        .await;
+        result.unwrap();
+        assert_eq!(samples.len(), expected, "{policy}");
+        assert!(!samples[0].result.success);
+        assert_eq!(samples[0].result.label, "failure");
+        if policy == "continue" {
+            assert!(samples[1].result.success);
+            assert_eq!(samples[1].result.label, "after");
+        }
+    }
 }
 
 #[tokio::test]

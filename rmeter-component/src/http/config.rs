@@ -130,6 +130,10 @@ pub struct HttpRequestConfig {
     pub settings: HttpRequestDefaults,
     pub body: HttpBody,
     pub assertions: Vec<AssertionConfig>,
+    /// Run after assertions, in order, with the complete response in readonly `prev`.
+    pub post_processors: Vec<crate::JavaScriptConfig>,
+    /// Complete input for post-processors, independent from assertions/report storage.
+    pub max_post_processor_body_bytes: usize,
     /// Independent from report storage. Oversized bodies fail all response assertions;
     /// the sampler still drains the whole response and reports its full byte count.
     pub max_assertion_body_bytes: usize,
@@ -141,6 +145,10 @@ impl HttpRequestConfig {
         self.assertions.push(assertion.into());
     }
 
+    pub fn add_post_processor(&mut self, processor: crate::JavaScriptConfig) {
+        self.post_processors.push(processor);
+    }
+
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -149,6 +157,8 @@ impl HttpRequestConfig {
             settings: HttpRequestDefaults::default(),
             body: HttpBody::Empty,
             assertions: Vec::new(),
+            post_processors: Vec::new(),
+            max_post_processor_body_bytes: 8 * 1024 * 1024,
             max_assertion_body_bytes: 8 * 1024 * 1024,
         }
     }

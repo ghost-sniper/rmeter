@@ -25,6 +25,7 @@ pub struct JdbcSampler {
     config: JdbcSamplerConfig,
     connection: Arc<JdbcConnection>,
     assertions: Vec<ResponseAssertion>,
+    post_processors: Vec<crate::JavaScriptSampler>,
 }
 impl JdbcSampler {
     pub fn new(
@@ -99,10 +100,13 @@ impl JdbcSampler {
             .map(ResponseAssertion::new)
             .collect::<Result<_, _>>()
             .map_err(|e| JdbcConfigError::new(e.to_string()))?;
+        let post_processors = crate::post_processor::compile(&config.post_processors)
+            .map_err(|e| JdbcConfigError::new(e.to_string()))?;
         Ok(Self {
             config,
             connection,
             assertions,
+            post_processors,
         })
     }
     pub fn config(&self) -> &JdbcSamplerConfig {
@@ -333,6 +337,14 @@ impl Sampler for JdbcSampler {
         for assertion in diagnostics {
             result.add_assertion(assertion);
         }
+        crate::post_processor::run(
+            &self.post_processors,
+            context,
+            &mut result,
+            payload.as_deref(),
+            Some("complete JDBC result is unavailable"),
+        )
+        .await;
         if self.config.save_response_body {
             result.response_body = payload;
         }

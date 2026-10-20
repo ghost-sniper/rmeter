@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "name": "HTTP and JDBC post processors",
+  "variables": {"baseUrl": "http://localhost:8080"},
+  "jdbc_connections": [{
+    "name": "PostgreSQL",
+    "variable_name": "db",
+    "url": "postgresql://localhost/rmeter",
+    "username": "postgres",
+    "password_env": "RMETER_POSTGRES_PASSWORD"
+  }],
+  "groups": [{
+    "name": "users",
+    "on_error": "stop_user",
+    "children": [
+      {
+        "type": "http_request",
+        "name": "Login",
+        "url": "${baseUrl}/login",
+        "settings": {"save_response_body": false},
+        "max_post_processor_body_bytes": 1048576,
+        "post_processors": [{
+          "type": "javascript",
+          "name": "Extract token",
+          "timeout_ms": 100,
+          "script": "if (!prev.success || prev.body === null) throw new Error(prev.bodyUnavailableReason || 'login failed'); vars.set('token', JSON.parse(prev.body).token);"
+        }]
+      },
+      {
+        "type": "jdbc_request",
+        "name": "Query user",
+        "connection": "db",
+        "sql": "SELECT 42::integer AS id",
+        "save_response_body": false,
+        "post_processors": [{
+          "type": "javascript",
+          "name": "Extract user ID",
+          "script": "if (!prev.success || prev.body === null) throw new Error('query failed'); const data = JSON.parse(prev.body); vars.set('userId', String(data.rows[0][data.columns.indexOf('id')]));"
+        }]
+      },
+      {
+        "type": "http_request",
+        "name": "User profile",
+        "url": "${baseUrl}/users/${userId}",
+        "settings": {"headers": [["Authorization", "Bearer ${token}"]]}
+      }
+    ]
+  }]
+}

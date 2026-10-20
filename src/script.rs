@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use rmeter_component::JavaScriptConfig;
 use rmeter_component::{
     AssertionConfig as ComponentAssertionConfig, ComponentCompiler, ComponentNode,
     ComponentSampler, HttpBody, HttpMethod, HttpRequestConfig, HttpRequestDefaults,
@@ -257,8 +258,56 @@ impl DefaultsConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JavaScriptNodeConfig {
+    name: String,
+    script: String,
+    timeout_ms: Option<u64>,
+    loop_iteration_limit: Option<u64>,
+    recursion_limit: Option<usize>,
+    stack_size_limit: Option<usize>,
+    max_variable_bytes: Option<usize>,
+}
+impl JavaScriptNodeConfig {
+    fn into_config(self) -> Result<JavaScriptConfig, ScriptError> {
+        require_name(&self.name, "javascript")?;
+        let mut config = JavaScriptConfig::new(self.name, self.script);
+        if let Some(value) = self.timeout_ms {
+            config.timeout = Duration::from_millis(value);
+        }
+        if let Some(value) = self.loop_iteration_limit {
+            config.loop_iteration_limit = value;
+        }
+        if let Some(value) = self.recursion_limit {
+            config.recursion_limit = value;
+        }
+        if let Some(value) = self.stack_size_limit {
+            config.stack_size_limit = value;
+        }
+        if let Some(value) = self.max_variable_bytes {
+            config.max_variable_bytes = value;
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum PostProcessorConfig {
+    Javascript(JavaScriptNodeConfig),
+}
+impl PostProcessorConfig {
+    fn into_config(self) -> Result<JavaScriptConfig, ScriptError> {
+        match self {
+            Self::Javascript(config) => config.into_config(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum NodeConfig {
+    Javascript(JavaScriptNodeConfig),
     #[serde(alias = "jdbc_connection")]
     JdbcConnectionConfiguration(ConnectionConfig),
     #[serde(alias = "jdbc_sampler")]
@@ -278,6 +327,8 @@ enum NodeConfig {
         row_count_variable: Option<String>,
         #[serde(default)]
         assertions: Vec<AssertionConfig>,
+        #[serde(default)]
+        post_processors: Vec<PostProcessorConfig>,
     },
     HttpRequest {
         name: String,
@@ -291,6 +342,9 @@ enum NodeConfig {
         #[serde(default)]
         assertions: Vec<AssertionConfig>,
         max_assertion_body_bytes: Option<usize>,
+        #[serde(default)]
+        post_processors: Vec<PostProcessorConfig>,
+        max_post_processor_body_bytes: Option<usize>,
     },
     HttpDefaults {
         settings: DefaultsConfig,
@@ -382,6 +436,7 @@ impl NodeConfig {
                 .collect::<Result<Vec<_>, _>>()
         };
         Ok(match self {
+            Self::Javascript(config) => ComponentNode::JavaScript(config.into_config()?),
             Self::JdbcConnectionConfiguration(config) => {
                 ComponentNode::JdbcConnection(config.into_config())
             }
@@ -398,6 +453,7 @@ impl NodeConfig {
                 result_variable,
                 row_count_variable,
                 assertions,
+                post_processors,
             } => {
                 require_name(&name, "jdbc_request")?;
                 let mut request = JdbcSamplerConfig::new(name, connection, sql);
@@ -420,6 +476,10 @@ impl NodeConfig {
                 }
                 request.result_variable = result_variable;
                 request.row_count_variable = row_count_variable;
+                request.post_processors = post_processors
+                    .into_iter()
+                    .map(PostProcessorConfig::into_config)
+                    .collect::<Result<_, _>>()?;
                 request.assertions = assertions
                     .into_iter()
                     .map(AssertionConfig::into_config)
@@ -434,6 +494,8 @@ impl NodeConfig {
                 body,
                 assertions,
                 max_assertion_body_bytes,
+                post_processors,
+                max_post_processor_body_bytes,
             } => {
                 require_name(&name, "http_request")?;
                 let mut request = HttpRequestConfig::new(name);
@@ -446,6 +508,13 @@ impl NodeConfig {
                 })?;
                 request.settings = settings.into_config();
                 request.body = body.into_body();
+                request.post_processors = post_processors
+                    .into_iter()
+                    .map(PostProcessorConfig::into_config)
+                    .collect::<Result<_, _>>()?;
+                if let Some(limit) = max_post_processor_body_bytes {
+                    request.max_post_processor_body_bytes = limit;
+                }
                 request.assertions = assertions
                     .into_iter()
                     .map(AssertionConfig::into_config)
