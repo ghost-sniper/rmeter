@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::HttpConfigError;
 
-pub(super) fn expand(
+pub(crate) fn expand(
     input: &str,
     variables: &HashMap<String, String>,
 ) -> Result<String, HttpConfigError> {
@@ -14,7 +14,7 @@ pub(super) fn expand(
     })
 }
 
-pub(super) fn validate(input: &str) -> Result<(), HttpConfigError> {
+pub(crate) fn validate(input: &str) -> Result<(), HttpConfigError> {
     substitute(input, |_| Ok(String::new())).map(|_| ())
 }
 
@@ -41,7 +41,7 @@ fn substitute(
     Ok(output)
 }
 
-pub(super) fn expand_json(
+pub(crate) fn expand_json(
     value: &serde_json::Value,
     variables: &HashMap<String, String>,
 ) -> Result<serde_json::Value, HttpConfigError> {

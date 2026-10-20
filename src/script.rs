@@ -1,13 +1,15 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use rmeter_component::{
-    HttpBody, HttpMethod, HttpNode, HttpRequestConfig, HttpRequestDefaults, HttpSampler,
-    JsonAssertionConfig, JsonMatcher, MatchSelection, Setting, compile_http_nodes,
+    AssertionConfig as ComponentAssertionConfig, ComponentCompiler, ComponentNode,
+    ComponentSampler, HttpBody, HttpMethod, HttpRequestConfig, HttpRequestDefaults,
+    JdbcConnectionConfig, JdbcQueryType, JdbcSamplerConfig, JsonAssertionConfig, JsonMatcher,
+    MatchSelection, RegexAssertionConfig, Setting, XmlAssertionConfig, XmlMatcher,
 };
 use rmeter_core::{
     controller::{CompareOperator, Condition, Operand, WhileCondition},
@@ -58,7 +60,7 @@ impl From<EngineError> for ScriptError {
 
 /// Accepts UTF-8 JSON (an optional UTF-8 BOM is allowed), rejects unknown fields,
 /// and compiles static HTTP/JSONPath/regex configuration before any request runs.
-pub fn parse_script(source: &str) -> Result<TestPlan<HttpSampler>, ScriptError> {
+pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptError> {
     let script: Script = serde_json::from_str(source.strip_prefix('\u{feff}').unwrap_or(source))
         .map_err(ScriptError::Json)?;
     if script.version != 1 {
@@ -69,6 +71,12 @@ pub fn parse_script(source: &str) -> Result<TestPlan<HttpSampler>, ScriptError> 
     }
     require_name(&script.name, "plan")?;
     let defaults = script.defaults.into_config();
+    let mut compiler = ComponentCompiler::new();
+    for connection in script.jdbc_connections {
+        compiler
+            .register_jdbc(connection.into_config())
+            .map_err(|error| ScriptError::Invalid(error.to_string()))?;
+    }
     let groups = script
         .groups
         .into_iter()
@@ -81,7 +89,8 @@ pub fn parse_script(source: &str) -> Result<TestPlan<HttpSampler>, ScriptError> 
                 .into_iter()
                 .map(NodeConfig::into_node)
                 .collect::<Result<Vec<_>, _>>()?;
-            let children = compile_http_nodes(nodes, &defaults)
+            let children = compiler
+                .compile(nodes, &defaults)
                 .map_err(|error| ScriptError::Invalid(format!("{location}: {error}")))?;
             Ok(ThreadGroup {
                 name: group.name,
@@ -101,7 +110,9 @@ pub fn parse_script(source: &str) -> Result<TestPlan<HttpSampler>, ScriptError> 
     })
 }
 
-pub async fn load_script(path: impl AsRef<Path>) -> Result<TestPlan<HttpSampler>, ScriptError> {
+pub async fn load_script(
+    path: impl AsRef<Path>,
+) -> Result<TestPlan<ComponentSampler>, ScriptError> {
     let path = path.as_ref();
     let source = tokio::fs::read_to_string(path)
         .await
@@ -130,6 +141,8 @@ struct Script {
     variables: HashMap<String, String>,
     #[serde(default)]
     defaults: DefaultsConfig,
+    #[serde(default)]
+    jdbc_connections: Vec<ConnectionConfig>,
     groups: Vec<GroupConfig>,
 }
 
@@ -246,6 +259,26 @@ impl DefaultsConfig {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum NodeConfig {
+    #[serde(alias = "jdbc_connection")]
+    JdbcConnectionConfiguration(ConnectionConfig),
+    #[serde(alias = "jdbc_sampler")]
+    JdbcRequest {
+        name: String,
+        connection: String,
+        sql: String,
+        #[serde(default)]
+        query_type: QueryTypeConfig,
+        #[serde(default)]
+        parameters: Vec<Value>,
+        query_timeout_ms: Option<u64>,
+        max_rows: Option<usize>,
+        max_result_bytes: Option<usize>,
+        save_response_body: Option<bool>,
+        result_variable: Option<String>,
+        row_count_variable: Option<String>,
+        #[serde(default)]
+        assertions: Vec<AssertionConfig>,
+    },
     HttpRequest {
         name: String,
         url: Option<String>,
@@ -289,8 +322,59 @@ enum NodeConfig {
 fn get() -> String {
     "GET".into()
 }
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DriverConfig {
+    #[default]
+    Postgresql,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum QueryTypeConfig {
+    #[default]
+    Select,
+    Update,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionConfig {
+    name: String,
+    variable_name: String,
+    url: String,
+    #[serde(default)]
+    driver: DriverConfig,
+    username: Option<String>,
+    password: Option<String>,
+    password_env: Option<String>,
+    max_connections: Option<usize>,
+    connect_timeout_ms: Option<u64>,
+    acquire_timeout_ms: Option<u64>,
+}
+impl ConnectionConfig {
+    fn into_config(self) -> JdbcConnectionConfig {
+        let mut config = JdbcConnectionConfig::new(self.variable_name, self.url);
+        config.name = self.name;
+        match self.driver {
+            DriverConfig::Postgresql => {}
+        }
+        config.username = self.username;
+        config.password = self.password;
+        config.password_env = self.password_env;
+        if let Some(value) = self.max_connections {
+            config.max_connections = value;
+        }
+        if let Some(value) = self.connect_timeout_ms {
+            config.connect_timeout = Duration::from_millis(value);
+        }
+        if let Some(value) = self.acquire_timeout_ms {
+            config.acquire_timeout = Duration::from_millis(value);
+        }
+        config
+    }
+}
 impl NodeConfig {
-    fn into_node(self) -> Result<HttpNode, ScriptError> {
+    fn into_node(self) -> Result<ComponentNode, ScriptError> {
         let children = |nodes: Vec<NodeConfig>| {
             nodes
                 .into_iter()
@@ -298,6 +382,50 @@ impl NodeConfig {
                 .collect::<Result<Vec<_>, _>>()
         };
         Ok(match self {
+            Self::JdbcConnectionConfiguration(config) => {
+                ComponentNode::JdbcConnection(config.into_config())
+            }
+            Self::JdbcRequest {
+                name,
+                connection,
+                sql,
+                query_type,
+                parameters,
+                query_timeout_ms,
+                max_rows,
+                max_result_bytes,
+                save_response_body,
+                result_variable,
+                row_count_variable,
+                assertions,
+            } => {
+                require_name(&name, "jdbc_request")?;
+                let mut request = JdbcSamplerConfig::new(name, connection, sql);
+                request.query_type = match query_type {
+                    QueryTypeConfig::Select => JdbcQueryType::Select,
+                    QueryTypeConfig::Update => JdbcQueryType::Update,
+                };
+                request.parameters = parameters;
+                if let Some(value) = query_timeout_ms {
+                    request.query_timeout = Duration::from_millis(value);
+                }
+                if let Some(value) = max_rows {
+                    request.max_rows = value;
+                }
+                if let Some(value) = max_result_bytes {
+                    request.max_result_bytes = value;
+                }
+                if let Some(value) = save_response_body {
+                    request.save_response_body = value;
+                }
+                request.result_variable = result_variable;
+                request.row_count_variable = row_count_variable;
+                request.assertions = assertions
+                    .into_iter()
+                    .map(AssertionConfig::into_config)
+                    .collect::<Result<_, _>>()?;
+                ComponentNode::JdbcRequest(request)
+            }
             Self::HttpRequest {
                 name,
                 url,
@@ -325,14 +453,14 @@ impl NodeConfig {
                 if let Some(limit) = max_assertion_body_bytes {
                     request.max_assertion_body_bytes = limit;
                 }
-                HttpNode::Request(request)
+                ComponentNode::HttpRequest(request)
             }
-            Self::HttpDefaults { settings } => HttpNode::Defaults(settings.into_config()),
-            Self::Sequence { children: nodes } => HttpNode::Sequence(children(nodes)?),
+            Self::HttpDefaults { settings } => ComponentNode::HttpDefaults(settings.into_config()),
+            Self::Sequence { children: nodes } => ComponentNode::Sequence(children(nodes)?),
             Self::Loop {
                 count,
                 children: nodes,
-            } => HttpNode::Loop {
+            } => ComponentNode::Loop {
                 count: count.into_count(),
                 children: children(nodes)?,
             },
@@ -341,7 +469,7 @@ impl NodeConfig {
                 children: nodes,
             } => {
                 require_name(&name, "controller")?;
-                HttpNode::Controller {
+                ComponentNode::Controller {
                     name,
                     children: children(nodes)?,
                 }
@@ -353,7 +481,7 @@ impl NodeConfig {
                 children: nodes,
             } => {
                 require_name(&name, "if")?;
-                HttpNode::If {
+                ComponentNode::If {
                     name,
                     condition: condition.into_condition(),
                     evaluate_all,
@@ -370,7 +498,7 @@ impl NodeConfig {
                     ConditionConfig::Expression(text) => WhileCondition::Expression(text),
                     condition => WhileCondition::Condition(condition.into_condition()),
                 };
-                HttpNode::While {
+                ComponentNode::While {
                     name,
                     condition,
                     children: children(nodes)?,
@@ -411,15 +539,91 @@ impl BodyConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum AssertionConfig {
+    Typed(TypedAssertionConfig),
+    /// Compatibility with version 1 scripts written before explicit component types.
+    LegacyJson(JsonConfig),
+}
+impl AssertionConfig {
+    fn into_config(self) -> Result<ComponentAssertionConfig, ScriptError> {
+        match self {
+            Self::Typed(TypedAssertionConfig::Json(config)) | Self::LegacyJson(config) => {
+                config.into_config().map(Into::into)
+            }
+            Self::Typed(TypedAssertionConfig::Regex(config)) => {
+                require_name(&config.name, "regex assertion")?;
+                Ok(RegexAssertionConfig {
+                    name: config.name,
+                    pattern: config.pattern,
+                    invert: config.invert,
+                }
+                .into())
+            }
+            Self::Typed(TypedAssertionConfig::Xml(config)) => {
+                require_name(&config.name, "XML assertion")?;
+                Ok(XmlAssertionConfig {
+                    name: config.name,
+                    xpath: config.xpath,
+                    namespaces: config.namespaces,
+                    selection: config.selection.into_selection(),
+                    matcher: match config.matcher {
+                        XmlMatcherConfig::Equals { expected } => XmlMatcher::Equals(expected),
+                        XmlMatcherConfig::Regex { pattern } => XmlMatcher::Regex(pattern),
+                        XmlMatcherConfig::Exists => XmlMatcher::Exists,
+                        XmlMatcherConfig::NotExists => XmlMatcher::NotExists,
+                    },
+                }
+                .into())
+            }
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TypedAssertionConfig {
+    Json(JsonConfig),
+    Regex(RegexConfig),
+    Xml(XmlConfig),
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AssertionConfig {
+struct RegexConfig {
+    name: String,
+    pattern: String,
+    #[serde(default)]
+    invert: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct XmlConfig {
+    name: String,
+    xpath: String,
+    matcher: XmlMatcherConfig,
+    #[serde(default)]
+    selection: SelectionConfig,
+    #[serde(default)]
+    namespaces: BTreeMap<String, String>,
+}
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum XmlMatcherConfig {
+    Equals { expected: String },
+    Regex { pattern: String },
+    Exists,
+    NotExists,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JsonConfig {
     name: String,
     path: String,
     matcher: MatcherConfig,
     #[serde(default)]
     selection: SelectionConfig,
 }
-impl AssertionConfig {
+impl JsonConfig {
     fn into_config(self) -> Result<JsonAssertionConfig, ScriptError> {
         require_name(&self.name, "assertion")?;
         Ok(JsonAssertionConfig {
@@ -431,11 +635,7 @@ impl AssertionConfig {
                 MatcherConfig::Exists => JsonMatcher::Exists,
                 MatcherConfig::NotExists => JsonMatcher::NotExists,
             },
-            selection: match self.selection {
-                SelectionConfig::One => MatchSelection::One,
-                SelectionConfig::Any => MatchSelection::Any,
-                SelectionConfig::All => MatchSelection::All,
-            },
+            selection: self.selection.into_selection(),
         })
     }
 }
@@ -454,6 +654,15 @@ enum SelectionConfig {
     One,
     Any,
     All,
+}
+impl SelectionConfig {
+    fn into_selection(self) -> MatchSelection {
+        match self {
+            Self::One => MatchSelection::One,
+            Self::Any => MatchSelection::Any,
+            Self::All => MatchSelection::All,
+        }
+    }
 }
 
 #[derive(Deserialize)]

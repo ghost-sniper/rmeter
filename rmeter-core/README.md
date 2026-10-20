@@ -11,7 +11,8 @@
 采样器在返回前通过 `SampleResult::add_assertion` 添加结果；失败会将采样 `success`
 置为 false，通过不会覆盖已有失败。各项结果保存在 `SampleResult.assertions`，
 引擎据最终 `success` 更新上下文和执行错误策略，IF/While 也读取该最终状态。
-JSONPath 实现位于 `rmeter-component`，核心库不依赖 JSON 或 HTTP 实现。
+JSONPath、完整正文正则和 XML/XPath 三种独立实现位于 `rmeter-component`，
+核心库不依赖 JSON、XML 或 HTTP 实现。
 
 ## 控制器结构
 

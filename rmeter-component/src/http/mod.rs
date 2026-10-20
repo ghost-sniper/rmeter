@@ -2,8 +2,8 @@
 
 mod config;
 mod plan;
-mod sampler;
-mod template;
+pub(crate) mod sampler;
+pub(crate) mod template;
 
 pub use config::{HttpBody, HttpConfigError, HttpRequestConfig, HttpRequestDefaults, Setting};
 pub use plan::{HttpNode, compile_http_nodes};

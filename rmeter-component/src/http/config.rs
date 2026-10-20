@@ -2,7 +2,7 @@ use std::{fmt, time::Duration};
 
 use reqwest::Method;
 
-use crate::assertion::JsonAssertionConfig;
+use crate::assertion::AssertionConfig;
 
 /// Distinguishes inheritance from explicit values, including disabling a timeout.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -129,13 +129,18 @@ pub struct HttpRequestConfig {
     /// Explicit request settings override the surrounding Defaults.
     pub settings: HttpRequestDefaults,
     pub body: HttpBody,
-    pub assertions: Vec<JsonAssertionConfig>,
-    /// Independent from report storage. Oversized bodies fail JSON assertions;
+    pub assertions: Vec<AssertionConfig>,
+    /// Independent from report storage. Oversized bodies fail all response assertions;
     /// the sampler still drains the whole response and reports its full byte count.
     pub max_assertion_body_bytes: usize,
 }
 
 impl HttpRequestConfig {
+    /// Attach an independent JSON, response-body regex, or XML assertion.
+    pub fn add_assertion(&mut self, assertion: impl Into<AssertionConfig>) {
+        self.assertions.push(assertion.into());
+    }
+
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),

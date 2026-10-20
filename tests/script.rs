@@ -18,6 +18,71 @@ use serde_json::{Value, json};
 use support::{TempScript, script, server};
 use tokio::sync::mpsc;
 
+#[test]
+fn jdbc_connections_compile_with_http_and_are_shared_across_groups() {
+    let source = json!({"version":1,"name":"mixed", "jdbc_connections":[{
+        "name":"database","variable_name":"db","driver":"postgresql","url":"postgresql://localhost/test"
+    }],"groups":[
+        {"name":"a","children":[{"type":"http_request","name":"HTTP","url":"http://localhost/"},
+            {"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT $1::integer","parameters":[1]}]},
+        {"name":"b","children":[{"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT 1"}]}
+    ]});
+    let plan = parse_script(&source.to_string()).unwrap();
+    let rmeter::core::plan::Node::Sample(http) = &plan.groups[0].children[0] else {
+        panic!()
+    };
+    assert!(http.as_http().is_some());
+    let rmeter::core::plan::Node::Sample(first) = &plan.groups[0].children[1] else {
+        panic!()
+    };
+    let rmeter::core::plan::Node::Sample(second) = &plan.groups[1].children[0] else {
+        panic!()
+    };
+    assert!(std::sync::Arc::ptr_eq(
+        first.as_jdbc().unwrap().connection(),
+        second.as_jdbc().unwrap().connection()
+    ));
+}
+
+#[test]
+fn jdbc_scripts_reject_missing_connections_and_invalid_configuration() {
+    let source = json!({"version":1,"name":"jdbc","groups":[{"name":"g","children":[
+        {"type":"jdbc_request","name":"query","connection":"db","sql":"SELECT 1"},
+        {"type":"jdbc_connection_configuration","name":"connection","variable_name":"db","url":"postgresql://localhost/test"}
+    ]}]});
+    assert_eq!(
+        parse_script(&source.to_string()).unwrap().groups[0]
+            .children
+            .len(),
+        1
+    );
+    let mut missing = source.clone();
+    missing["groups"][0]["children"][0]["connection"] = json!("missing");
+    assert!(
+        parse_script(&missing.to_string())
+            .unwrap_err()
+            .to_string()
+            .contains("was not configured")
+    );
+    for (field, invalid) in [
+        ("driver", json!("mysql")),
+        ("max_connections", json!(0)),
+        ("connect_timeout_ms", json!(0)),
+        ("url", json!("jdbc:mysql://localhost/test")),
+        ("unknown_setting", json!(true)),
+    ] {
+        let mut invalid_source = source.clone();
+        invalid_source["groups"][0]["children"][1][field] = invalid;
+        assert!(
+            parse_script(&invalid_source.to_string()).is_err(),
+            "{field}"
+        );
+    }
+    let mut inline_url = source;
+    inline_url["groups"][0]["children"][0]["url"] = json!("postgresql://localhost/other");
+    assert!(parse_script(&inline_url.to_string()).is_err());
+}
+
 /// A broken run or a missing request must fail the test instead of hanging it.
 async fn within<T>(operation: &str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(5), future)
@@ -124,7 +189,7 @@ fn preserves_timeout_inheritance_disable_and_scoped_defaults() {
         let CursorStep::Sample(sampler) = cursor.step(&mut context).unwrap() else {
             panic!("expected one of the three configured requests");
         };
-        settings.push(sampler.config().settings.clone());
+        settings.push(sampler.as_http().unwrap().config().settings.clone());
     }
     assert!(matches!(
         cursor.step(&mut context).unwrap(),
@@ -363,4 +428,148 @@ async fn aborting_library_run_cancels_in_flight_http_and_closes_events() {
 #[test]
 fn shipped_example_compiles_without_network_requests() {
     parse_script(include_str!("../examples/http.json")).unwrap();
+    parse_script(include_str!("../examples/assertions.json")).unwrap();
+    parse_script(include_str!("../examples/jdbc_postgresql.json")).unwrap();
+}
+
+#[tokio::test]
+async fn regex_and_xml_failures_update_controller_state_before_the_next_request() {
+    for (body, assertion) in [
+        (
+            "ready",
+            json!({"type":"regex","name":"must fail","pattern":"ERROR"}),
+        ),
+        (
+            "<root><code>7</code></root>",
+            json!({"type":"xml","name":"must fail","xpath":"/root/code","matcher":{"type":"equals","expected":"0"}}),
+        ),
+    ] {
+        let (url, task) = server(body, 4).await;
+        let source = json!({"version":1,"name":"assertion state","groups":[{
+            "name":"g","iterations":2,"on_error":"continue","children":[
+                {"type":"if","name":"check every sample","condition":{"type":"last_sample_ok"},"evaluate_all":true,"children":[
+                    {"type":"http_request","name":"asserted","url":url,"assertions":[assertion]},
+                    {"type":"http_request","name":"skip IF","url":url}
+                ]},
+                {"type":"while","name":"skip While","condition":"LAST","children":[{"type":"http_request","name":"skip While","url":url}]},
+                {"type":"http_request","name":"after","url":url}
+            ]
+        }]}).to_string();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (result, samples) = within("assertion controller state", async {
+            tokio::join!(run_script(&source, sender), async {
+                let mut samples = Vec::new();
+                while let Some(event) = receiver.recv().await {
+                    if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                        samples.push((
+                            sample.result.label,
+                            sample.iteration,
+                            sample.result.success,
+                        ));
+                    }
+                }
+                samples
+            })
+        })
+        .await;
+        result.unwrap();
+        within("assertion state server", task).await.unwrap();
+        assert_eq!(
+            samples,
+            vec![
+                ("asserted".into(), 0, false),
+                ("after".into(), 0, true),
+                ("asserted".into(), 1, false),
+                ("after".into(), 1, true)
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn typed_assertion_components_execute_and_legacy_json_stays_compatible() {
+    let cases = [
+        (
+            r#"{"code":0}"#,
+            json!([
+                {"type":"json","name":"typed JSON","path":"$.code","matcher":{"type":"equals","expected":0}},
+                {"type":"regex","name":"body regex","pattern":"code"},
+                {"name":"legacy JSON","path":"$.code","matcher":{"type":"equals","expected":0}}
+            ]),
+            vec![true, true, true],
+        ),
+        (
+            r#"<r xmlns="urn:test"><code>0</code></r>"#,
+            json!([
+                {"type":"xml","name":"XML","xpath":"/n:r/n:code/text()","namespaces":{"n":"urn:test"},
+                    "matcher":{"type":"equals","expected":"0"}},
+                {"type":"regex","name":"body regex","pattern":"<code>0</code>"},
+                {"type":"json","name":"invalid JSON","path":"$.missing","matcher":{"type":"not_exists"}}
+            ]),
+            vec![true, true, false],
+        ),
+        (
+            "ready\nstatus=ok",
+            json!([
+                {"type":"regex","name":"multiline","pattern":"(?m)^status=ok$"},
+                {"type":"regex","name":"no error","pattern":"ERROR","invert":true}
+            ]),
+            vec![true, true],
+        ),
+    ];
+    for (body, assertions, expected) in cases {
+        let (url, task) = server(body, 1).await;
+        let mut source = script(&url);
+        source["groups"][0]["children"][0]["assertions"] = assertions;
+        let source = source.to_string();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (result, samples) = within("typed assertions", async {
+            tokio::join!(run_script(&source, sender), async {
+                let mut samples = Vec::new();
+                while let Some(event) = receiver.recv().await {
+                    if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                        samples.push(sample);
+                    }
+                }
+                samples
+            })
+        })
+        .await;
+        result.unwrap();
+        within("typed assertion server", task).await.unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(
+            samples[0].result.success,
+            expected.iter().all(|success| *success)
+        );
+        assert_eq!(
+            samples[0]
+                .result
+                .assertions
+                .iter()
+                .map(|a| a.success)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn malformed_or_mixed_component_fields_are_rejected() {
+    for assertion in [
+        json!({"type":"unknown","name":"unknown","path":"$","matcher":{"type":"exists"}}),
+        json!({"type":"regex","name":"invalid","pattern":"["}),
+        json!({"type":"regex","name":"wrong field","pattern":"ok","path":"$"}),
+        json!({"type":"xml","name":"invalid","xpath":"/root[","matcher":{"type":"exists"}}),
+        json!({"type":"xml","name":"unbound prefix","xpath":"/x:root","matcher":{"type":"exists"}}),
+        json!({"type":"xml","name":"wrong type","xpath":"/root","matcher":{"type":"equals","expected":0}}),
+        json!({"type":"json","name":"wrong field","path":"$","pattern":".*","matcher":{"type":"exists"}}),
+    ] {
+        let mut source = script("http://localhost/");
+        source["groups"][0]["children"][0]["assertions"] = json!([assertion]);
+        assert!(
+            parse_script(&source.to_string()).is_err(),
+            "accepted {source}"
+        );
+    }
 }

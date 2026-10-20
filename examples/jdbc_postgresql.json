@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "name": "PostgreSQL JDBC 采样示例（Rust 驱动）",
+  "variables": {
+    "db_url": "postgresql://postgres@127.0.0.1:5432/postgres?sslmode=disable",
+    "id": "1",
+    "display_name": "rmeter JDBC",
+    "enabled": "true"
+  },
+  "groups": [{
+    "name": "数据库测试用户",
+    "users": 1,
+    "iterations": 1,
+    "on_error": "stop_test",
+    "children": [
+      {
+        "type": "jdbc_connection_configuration",
+        "name": "PostgreSQL 连接配置",
+        "variable_name": "pg_pool",
+        "driver": "postgresql",
+        "url": "${db_url}",
+        "max_connections": 4,
+        "connect_timeout_ms": 3000,
+        "acquire_timeout_ms": 3000
+      },
+      {
+        "type": "jdbc_request",
+        "name": "创建示例表",
+        "connection": "pg_pool",
+        "query_type": "update",
+        "sql": "CREATE TABLE IF NOT EXISTS rmeter_jdbc_example (id BIGINT PRIMARY KEY, display_name TEXT NOT NULL)"
+      },
+      {
+        "type": "jdbc_request",
+        "name": "参数化写入",
+        "connection": "pg_pool",
+        "query_type": "update",
+        "sql": "INSERT INTO rmeter_jdbc_example (id, display_name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name",
+        "parameters": ["${id}", "${display_name}"],
+        "assertions": [{"type": "json", "name": "写入一行", "path": "$.rows_affected", "matcher": {"type": "equals", "expected": 1}}]
+      },
+      {
+        "type": "if",
+        "name": "启用数据库查询",
+        "condition": "${enabled}",
+        "children": [{
+          "type": "loop",
+          "count": 2,
+          "children": [{
+            "type": "jdbc_request",
+            "name": "参数化查询",
+            "connection": "pg_pool",
+            "query_type": "select",
+            "sql": "SELECT id, display_name FROM rmeter_jdbc_example WHERE id = $1",
+            "parameters": ["${id}"],
+            "query_timeout_ms": 3000,
+            "max_rows": 100,
+            "result_variable": "last_query_result",
+            "row_count_variable": "selected_count",
+            "assertions": [
+              {"type": "json", "name": "查询一行", "path": "$.row_count", "matcher": {"type": "equals", "expected": 1}},
+              {"type": "json", "name": "名称正确", "path": "$.rows[0][1]", "matcher": {"type": "equals", "expected": "rmeter JDBC"}}
+            ]
+          }]
+        }]
+      }
+    ]
+  }]
+}

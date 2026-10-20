@@ -1,6 +1,9 @@
 # rmeter-component
 
-HTTP/HTTPS 采样器、HTTP Request Defaults 和 JSON 断言。依赖 `rmeter-core`，可直接交给现有 `Engine` 执行。
+HTTP/HTTPS 采样器、HTTP Request Defaults，以及 JSON、正文正则和 XML 三种独立断言组件。
+依赖 `rmeter-core`，可直接交给现有 `Engine` 执行。
+还提供使用 Rust 原生 PostgreSQL 驱动的 JDBC 采样器与命名连接配置组件，
+详见 [JDBC 使用文档](src/jdbc/README.md)。
 
 ## 创建采样器
 
@@ -98,10 +101,10 @@ use rmeter_core::{context::UserContext, sampler::Sampler};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let mut request = HttpRequestConfig::with_url("查询状态", "http://127.0.0.1:8080/status");
-request.assertions.push(JsonAssertionConfig::equals(
+request.add_assertion(JsonAssertionConfig::equals(
     "业务状态成功", "$.code", serde_json::json!(0),
 ));
-request.assertions.push(JsonAssertionConfig::equals(
+request.add_assertion(JsonAssertionConfig::equals(
     "用户已启用", "$.data.enabled", serde_json::json!(true),
 ));
 let sampler = HttpSampler::new(request)?;
@@ -147,6 +150,48 @@ assert!(assertion.evaluate_json(&serde_json::json!({
 - 超过断言缓存限制、读取不完整、请求失败或 JSON 非法均导致断言失败，包括 `NotExists`。超过限制仍继续读取响应并统计字节。
 - 未配置断言时不创建断言响应缓存、不解析 JSON。采样 `elapsed` 不包含断言求值耗时。
 - 当前 JSONPath、预期值和正则为静态配置，不展开变量；断言按单个请求配置。
+
+## 独立断言组件
+
+`HttpRequestConfig.assertions` 现在是 `Vec<AssertionConfig>`，可以混合
+`Json`、`Regex`、`Xml` 三种组件。各组件分别实现核心 `Assertion` 接口，
+也可通过 `ResponseAssertion::new` 统一编译和独立求值。
+原来直接对列表 push JSON 配置的 Rust 调用需添加 `.into()`，
+或改用接受三种配置的 `request.add_assertion(...)`。
+
+```rust,no_run
+use rmeter_component::{HttpRequestConfig, HttpSampler, RegexAssertionConfig, XmlAssertionConfig};
+
+let mut request = HttpRequestConfig::with_url("XML 状态", "http://127.0.0.1:8080/xml");
+request.add_assertion(RegexAssertionConfig::new("响应包含状态", "<code>0</code>"));
+request.add_assertion(XmlAssertionConfig::equals("XML 业务码", "/response/code/text()", "0"));
+let sampler = HttpSampler::new(request).unwrap();
+```
+
+- **JSON**：保留上述 JSONPath、类型相等、字符串正则和存在检查语义。
+- **正文正则**：对完整 UTF-8 响应正文搜索匹配，完全不依赖 JSON/XML 解析。
+  `invert=true` 要求不匹配；默认 false。用 `^...$` 约束整串，
+  `(?m)` 开启多行锚点，`(?s)` 允许点匹配换行。
+- **XML**：使用 [SXD-XPath](https://docs.rs/sxd-xpath/latest/sxd_xpath/) 的 XPath 1.0 求值，
+  支持元素、属性、文本、路径筛选及函数结果。节点按文档顺序读取其 XPath 字符串值；
+  `XmlMatcher::Equals` 比较字符串，不裁剪空白，预期数字也应写字符串。
+  同样支持 Regex、Exists、NotExists 与 One/Any/All。存在检查仅接受节点集合；
+  `count(...)`、`boolean(...)` 等标量按 XPath 字符串转换后与预期值比较。
+  `namespaces` 显式绑定查询前缀，包括查询 XML 默认命名空间时；
+  `xml` 前缀自动绑定标准 URI。未绑定前缀在构造阶段报错。
+
+所有组件按声明顺序执行；一项失败不会跳过其他项。JSON 与 XML 按需各解析一次，
+互不阻塞；例如对 XML 响应配置 JSON 组件会失败，但正文正则和 XML 组件仍正常执行。
+JSONPath、正则、XPath 语法及命名空间绑定在构造时检查。
+XPath 的线程相关执行对象在当前线程内创建，不跨线程共享。
+
+三种组件都受独立的 `max_assertion_body_bytes` 限制（默认 8 MiB），
+不使用报告中可能截断的响应体。超限、缺失或读取不完整的输入不能通过负向断言。
+正文正则与 XML 当前要求 UTF-8；XML 不支持 DOCTYPE/DTD、外部实体或 XSD 校验。
+三种组件的表达式与预期值都是静态配置，不展开变量。
+
+脚本中的组件使用 `type: json / regex / xml`。未写 type 的旧 JSON 断言继续兼容。
+完整脚本见根目录 `examples/assertions.json`，配套本地服务为 `controller_http_server`。
 
 ## 条件控制器
 

@@ -5,6 +5,9 @@ pub mod script;
 
 pub use rmeter_component as component;
 pub use rmeter_component::HttpSampler;
+pub use rmeter_component::{
+    ComponentSampler, JdbcConnectionConfig, JdbcSampler, JdbcSamplerConfig,
+};
 pub use rmeter_core as core;
 pub use rmeter_core::{engine::Engine, event::RunEvent, plan::TestPlan};
 pub use script::{ScriptError, load_script, parse_script};

@@ -1,8 +1,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use rmeter_component::{
-    HttpBody, HttpMethod, HttpNode, HttpRequestConfig, HttpRequestDefaults, HttpSampler,
-    JsonAssertionConfig, Setting, compile_http_nodes,
+    AssertionConfig, HttpBody, HttpMethod, HttpNode, HttpRequestConfig, HttpRequestDefaults,
+    HttpSampler, JsonAssertionConfig, RegexAssertionConfig, Setting, XmlAssertionConfig,
+    compile_http_nodes,
 };
 use rmeter_core::{
     context::UserContext,
@@ -24,6 +25,145 @@ struct Response {
     body_delay: Duration,
     prefix_len: usize,
     declared_length: Option<usize>,
+}
+
+#[tokio::test]
+async fn independent_components_keep_order_and_use_complete_http_body() {
+    let payload = b"<root><code>0</code></root>";
+    for save in [false, true] {
+        let (base, task) = server(vec![Response::new("200 OK", payload)]).await;
+        let mut request = HttpRequestConfig::with_url("mixed", base);
+        request.settings.save_response_body = Some(save);
+        request.settings.max_saved_body_bytes = Some(1);
+        request.add_assertion(JsonAssertionConfig::equals(
+            "JSON code",
+            "$.code",
+            serde_json::json!(0),
+        ));
+        request.add_assertion(RegexAssertionConfig::new("raw body", "<code>0</code>"));
+        request.add_assertion(XmlAssertionConfig::equals("XML code", "/root/code", "0"));
+        let result = HttpSampler::new(request)
+            .unwrap()
+            .sample(&mut context())
+            .await
+            .unwrap();
+        assert!(!result.success); // XML is not JSON, but other components still run.
+        assert_eq!(
+            result
+                .assertions
+                .iter()
+                .map(|a| (a.name.as_str(), a.success))
+                .collect::<Vec<_>>(),
+            vec![("JSON code", false), ("raw body", true), ("XML code", true)]
+        );
+        assert_eq!(result.response_code.as_deref(), Some("200"));
+        assert_eq!(result.response_message.as_deref(), Some("OK"));
+        assert_eq!(result.bytes_received, payload.len() as u64);
+        assert_eq!(
+            result.response_body.as_deref(),
+            if save { Some(b"<".as_slice()) } else { None }
+        );
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn regex_can_check_non_json_and_passing_components_cannot_restore_http_failure() {
+    for status in ["200 OK", "500 Internal Server Error"] {
+        let (base, task) = server(vec![Response::new(status, b"status=ok")]).await;
+        let mut request = HttpRequestConfig::with_url("plain text", base);
+        request.add_assertion(RegexAssertionConfig::new("status", "^status=ok$"));
+        let result = HttpSampler::new(request)
+            .unwrap()
+            .sample(&mut context())
+            .await
+            .unwrap();
+        assert_eq!(result.success, status.starts_with("200"));
+        assert!(result.assertions[0].success);
+        task.await.unwrap();
+    }
+}
+
+fn negative_assertions() -> Vec<AssertionConfig> {
+    let mut xml = XmlAssertionConfig::equals("XML missing", "/missing", "");
+    xml.matcher = rmeter_component::XmlMatcher::NotExists;
+    vec![
+        JsonAssertionConfig {
+            name: "JSON missing".into(),
+            path: "$.missing".into(),
+            matcher: rmeter_component::JsonMatcher::NotExists,
+            selection: rmeter_component::MatchSelection::One,
+        }
+        .into(),
+        RegexAssertionConfig {
+            name: "no error".into(),
+            pattern: "ERROR".into(),
+            invert: true,
+        }
+        .into(),
+        xml.into(),
+    ]
+}
+
+#[tokio::test]
+async fn all_component_types_fail_when_http_input_is_oversized_incomplete_or_unavailable() {
+    let payload = b"<root/>";
+    for incomplete in [false, true] {
+        let mut response = Response::new("200 OK", payload);
+        if incomplete {
+            response.declared_length = Some(payload.len() + 1);
+        }
+        let (base, task) = server(vec![response]).await;
+        let mut request = HttpRequestConfig::with_url("unavailable", base);
+        request.assertions = negative_assertions();
+        if !incomplete {
+            request.max_assertion_body_bytes = payload.len() - 1;
+        }
+        let result = HttpSampler::new(request)
+            .unwrap()
+            .sample(&mut context())
+            .await
+            .unwrap();
+        assert_eq!(result.bytes_received, payload.len() as u64);
+        assert!(!result.success);
+        assert_eq!(result.assertions.len(), 3);
+        for assertion in result.assertions {
+            assert!(!assertion.success);
+            assert!(assertion.message.unwrap().contains(if incomplete {
+                "incomplete"
+            } else {
+                "exceeds"
+            }));
+        }
+        task.await.unwrap();
+    }
+    let mut request = HttpRequestConfig::with_url("no response", "http://${missing}/");
+    request.assertions = negative_assertions();
+    let result = HttpSampler::new(request)
+        .unwrap()
+        .sample(&mut context())
+        .await
+        .unwrap();
+    assert_eq!(result.assertions.len(), 3);
+    assert!(result.assertions.iter().all(|a| !a.success));
+}
+
+#[test]
+fn http_compilation_checks_regex_and_xml_configurations() {
+    for config in [
+        RegexAssertionConfig::new("bad config", "[").into(),
+        XmlAssertionConfig::equals("bad config", "/root[", "0").into(),
+        XmlAssertionConfig::equals("bad config", "/missing:root", "0").into(),
+    ] {
+        let mut request = HttpRequestConfig::with_url("request", "http://localhost/");
+        request.assertions.push(config);
+        assert!(
+            HttpSampler::new(request)
+                .unwrap_err()
+                .message
+                .contains("bad config")
+        );
+    }
 }
 
 impl Response {
@@ -688,13 +828,14 @@ async fn json_assertions_use_complete_body_with_saving_disabled_or_truncated() {
         request.settings.save_response_body = Some(save);
         request.settings.max_saved_body_bytes = Some(1);
         request.assertions = vec![
-            JsonAssertionConfig::equals("code", "$.code", serde_json::json!(0)),
+            JsonAssertionConfig::equals("code", "$.code", serde_json::json!(0)).into(),
             JsonAssertionConfig {
                 name: "name".into(),
                 path: "$.data.name".into(),
                 matcher: rmeter_component::JsonMatcher::Regex("^user-[0-9]+$".into()),
                 selection: rmeter_component::MatchSelection::One,
-            },
+            }
+            .into(),
         ];
         let result = HttpSampler::new(request)
             .unwrap()
@@ -717,7 +858,7 @@ async fn json_assertions_use_complete_body_with_saving_disabled_or_truncated() {
 async fn failed_json_assertion_preserves_http_status_and_reports_details() {
     let (base, task) = server(vec![Response::new("200 OK", br#"{"code":7}"#)]).await;
     let mut request = HttpRequestConfig::with_url("business failure", &base);
-    request.assertions.push(JsonAssertionConfig::equals(
+    request.add_assertion(JsonAssertionConfig::equals(
         "code must be zero",
         "$.code",
         serde_json::json!(0),
@@ -748,7 +889,7 @@ async fn assertion_body_limit_is_independent_and_still_drains_response() {
     for limit in [payload.len(), payload.len() - 1] {
         let (base, task) = server(vec![Response::new("200 OK", payload)]).await;
         let mut request = HttpRequestConfig::with_url("limit", &base);
-        request.assertions.push(JsonAssertionConfig::equals(
+        request.add_assertion(JsonAssertionConfig::equals(
             "code",
             "$.code",
             serde_json::json!(0),
@@ -783,7 +924,7 @@ async fn invalid_or_incomplete_json_cannot_pass_assertions() {
     for response in [Response::new("200 OK", b"not JSON"), incomplete] {
         let (base, task) = server(vec![response]).await;
         let mut request = HttpRequestConfig::with_url("invalid body", &base);
-        request.assertions.push(JsonAssertionConfig::equals(
+        request.add_assertion(JsonAssertionConfig::equals(
             "code",
             "$.code",
             serde_json::json!(0),
@@ -803,7 +944,7 @@ async fn invalid_or_incomplete_json_cannot_pass_assertions() {
 #[tokio::test]
 async fn failed_request_records_unavailable_assertion_input() {
     let mut request = HttpRequestConfig::with_url("missing variable", "http://${missing}/");
-    request.assertions.push(JsonAssertionConfig::equals(
+    request.add_assertion(JsonAssertionConfig::equals(
         "code",
         "$.code",
         serde_json::json!(0),
@@ -828,7 +969,7 @@ async fn failed_request_records_unavailable_assertion_input() {
 #[test]
 fn http_sampler_validates_assertion_configuration_before_running() {
     let mut request = HttpRequestConfig::with_url("invalid assertion", "http://localhost/");
-    request.assertions.push(JsonAssertionConfig::equals(
+    request.add_assertion(JsonAssertionConfig::equals(
         "invalid path",
         "$.items[",
         serde_json::json!(0),
@@ -863,7 +1004,7 @@ async fn json_assertion_failures_trigger_all_engine_error_policies() {
         )
         .await;
         let mut request = HttpRequestConfig::with_url("asserted", &base);
-        request.assertions.push(JsonAssertionConfig::equals(
+        request.add_assertion(JsonAssertionConfig::equals(
             "code",
             "$.code",
             serde_json::json!(0),
@@ -927,7 +1068,7 @@ async fn assertion_failure_is_visible_to_if_and_while_before_the_next_sample() {
     ])
     .await;
     let mut request = HttpRequestConfig::with_url("asserted", &base);
-    request.assertions.push(JsonAssertionConfig::equals(
+    request.add_assertion(JsonAssertionConfig::equals(
         "code",
         "$.code",
         serde_json::json!(0),

@@ -14,7 +14,7 @@ use rmeter_core::{
     sampler::{SampleError, SampleResult, Sampler},
 };
 
-use crate::assertion::{JsonAssertion, evaluate_json_assertions};
+use crate::assertion::{ResponseAssertion, evaluate_assertions};
 
 use super::{HttpBody, HttpConfigError, HttpRequestConfig, HttpRequestDefaults, Setting, template};
 
@@ -26,11 +26,11 @@ use super::{HttpBody, HttpConfigError, HttpRequestConfig, HttpRequestDefaults, S
 pub struct HttpSampler {
     config: HttpRequestConfig,
     client: Client,
-    assertions: Vec<JsonAssertion>,
+    assertions: Vec<ResponseAssertion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct ClientOptions {
+pub(crate) struct ClientOptions {
     connect_timeout: Option<Duration>,
     follow_redirects: bool,
     max_redirects: usize,
@@ -53,7 +53,7 @@ impl HttpSampler {
         &self.config
     }
 
-    pub(super) fn prepare(
+    pub(crate) fn prepare(
         mut config: HttpRequestConfig,
         defaults: &HttpRequestDefaults,
         clients: &mut HashMap<ClientOptions, Client>,
@@ -63,7 +63,7 @@ impl HttpSampler {
             .assertions
             .iter()
             .cloned()
-            .map(JsonAssertion::new)
+            .map(ResponseAssertion::new)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| HttpConfigError::new(error.to_string()))?;
         let settings = &config.settings;
@@ -196,7 +196,7 @@ impl HttpSampler {
         body: Option<&[u8]>,
         reason: Option<&str>,
     ) {
-        let diagnostics = evaluate_json_assertions(
+        let diagnostics = evaluate_assertions(
             &self.assertions,
             &AssertionInput {
                 sample: result,
@@ -319,7 +319,7 @@ impl Sampler for HttpSampler {
             Some("response body is incomplete".to_owned())
         } else if assertion_body_overflow {
             Some(format!(
-                "JSON assertion input exceeds {} bytes",
+                "assertion input exceeds {} bytes",
                 self.config.max_assertion_body_bytes
             ))
         } else {

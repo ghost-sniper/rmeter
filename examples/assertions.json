@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "name": "三种独立断言组件",
+  "variables": {"base_url": "http://127.0.0.1:8080"},
+  "defaults": {"request_timeout_ms": 3000},
+  "groups": [{
+    "name": "断言测试",
+    "users": 1,
+    "iterations": 1,
+    "on_error": "continue",
+    "children": [
+      {
+        "type": "http_request",
+        "name": "JSON 与正文正则",
+        "url": "${base_url}/status",
+        "assertions": [
+          {"type": "json", "name": "业务码成功", "path": "$.code", "matcher": {"type": "equals", "expected": 0}},
+          {"type": "regex", "name": "正文包含 ready 字段", "pattern": "\"ready\"\\s*:\\s*true"}
+        ]
+      },
+      {
+        "type": "http_request",
+        "name": "XML 与正文正则",
+        "url": "${base_url}/xml",
+        "assertions": [
+          {"type": "xml", "name": "XML 业务码成功", "xpath": "/response/code/text()", "matcher": {"type": "equals", "expected": "0"}},
+          {"type": "regex", "name": "正文包含消息", "pattern": "<message>ready</message>"}
+        ]
+      },
+      {
+        "type": "http_request",
+        "name": "纯文本正则",
+        "url": "${base_url}/text",
+        "assertions": [
+          {"type": "regex", "name": "状态行正确", "pattern": "(?m)^status=ok$"},
+          {"type": "regex", "name": "不含错误标记", "pattern": "ERROR", "invert": true}
+        ]
+      }
+    ]
+  }]
+}

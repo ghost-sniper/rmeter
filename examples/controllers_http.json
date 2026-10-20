@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "name": "条件与循环控制器 HTTP 集成测试",
+  "variables": {
+    "base_url": "http://127.0.0.1:8080",
+    "enabled": "true"
+  },
+  "defaults": {
+    "request_timeout_ms": 3000,
+    "headers": [["Accept", "application/json"]]
+  },
+  "groups": [
+    {
+      "name": "控制器测试用户",
+      "users": 2,
+      "ramp_up_ms": 0,
+      "iterations": 2,
+      "max_duration_ms": 10000,
+      "on_error": "stop_test",
+      "children": [
+        {
+          "type": "controller",
+          "name": "业务流程",
+          "children": [
+            {
+              "type": "if",
+              "name": "启用 HTTP 请求",
+              "condition": "${enabled}",
+              "children": [
+                {
+                  "type": "loop",
+                  "count": 3,
+                  "children": [
+                    {
+                      "type": "http_request",
+                      "name": "Loop 状态请求",
+                      "url": "${base_url}/status",
+                      "assertions": [
+                        {
+                          "name": "业务码成功",
+                          "path": "$.code",
+                          "matcher": {"type": "equals", "expected": 0}
+                        },
+                        {
+                          "name": "服务就绪",
+                          "path": "$.data.ready",
+                          "matcher": {"type": "equals", "expected": true}
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "if",
+              "name": "跳过的分支",
+              "condition": false,
+              "children": [
+                {
+                  "type": "http_request",
+                  "name": "不应执行的请求",
+                  "url": "${base_url}/must-not-run"
+                }
+              ]
+            },
+            {
+              "type": "while",
+              "name": "poll",
+              "condition": {
+                "type": "compare",
+                "left": {"type": "variable", "name": "__jm__poll__idx"},
+                "operator": "less",
+                "right": {"type": "literal", "value": "2"}
+              },
+              "children": [
+                {
+                  "type": "http_request",
+                  "name": "While 轮询 ${__jm__poll__idx}",
+                  "url": "${base_url}/poll",
+                  "settings": {
+                    "query": [["index", "${__jm__poll__idx}"]]
+                  },
+                  "assertions": [
+                    {
+                      "name": "轮询业务码成功",
+                      "path": "$.code",
+                      "matcher": {"type": "equals", "expected": 0}
+                    },
+                    {
+                      "name": "循环索引为 0 或 1",
+                      "path": "$.data.index",
+                      "matcher": {"type": "regex", "pattern": "^[01]$"}
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

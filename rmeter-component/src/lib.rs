@@ -1,10 +1,20 @@
 #![doc = include_str!("../README.md")]
 
 pub mod assertion;
+pub mod component;
 pub mod http;
+pub mod jdbc;
+
+pub use component::{ComponentCompiler, ComponentConfigError, ComponentNode, ComponentSampler};
+pub use jdbc::{
+    JDBCConnectionConfiguration, JDBCSampler, JdbcConfigError, JdbcConnection,
+    JdbcConnectionConfig, JdbcQueryType, JdbcSampler, JdbcSamplerConfig,
+};
 
 pub use assertion::{
-    JsonAssertion, JsonAssertionConfig, JsonAssertionError, JsonMatcher, MatchSelection,
+    AssertionConfig, AssertionConfigError, JsonAssertion, JsonAssertionConfig, JsonAssertionError,
+    JsonMatcher, MatchSelection, RegexAssertion, RegexAssertionConfig, ResponseAssertion,
+    XmlAssertion, XmlAssertionConfig, XmlMatcher,
 };
 
 pub use http::{

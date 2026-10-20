@@ -94,7 +94,7 @@ impl JsonAssertion {
         &self.config
     }
 
-    fn failure(&self, message: impl Into<String>) -> AssertionResult {
+    pub(super) fn failure(&self, message: impl Into<String>) -> AssertionResult {
         AssertionResult::failed(
             &self.config.name,
             format!("JSONPath {:?}: {}", self.config.path, message.into()),
@@ -160,33 +160,8 @@ impl Assertion for JsonAssertion {
     }
 }
 
-/// HTTP integration parses a response only once even when it has many assertions.
-pub(crate) fn evaluate_json_assertions(
-    assertions: &[JsonAssertion],
-    input: &AssertionInput<'_>,
-) -> Vec<AssertionResult> {
-    if assertions.is_empty() {
-        return Vec::new();
-    }
-    match parse_body(input) {
-        Ok(document) => assertions
-            .iter()
-            .map(|assertion| assertion.evaluate_json(&document))
-            .collect(),
-        Err(message) => assertions
-            .iter()
-            .map(|assertion| assertion.failure(&message))
-            .collect(),
-    }
-}
-
-fn parse_body(input: &AssertionInput<'_>) -> Result<Value, String> {
-    if let Some(reason) = input.unavailable_reason {
-        return Err(reason.into());
-    }
-    let body = input
-        .response_body
-        .ok_or("complete response body is unavailable")?;
+pub(super) fn parse_body(input: &AssertionInput<'_>) -> Result<Value, String> {
+    let body = super::body_bytes(input)?;
     serde_json::from_slice(body).map_err(|error| format!("invalid JSON response: {error}"))
 }
 
