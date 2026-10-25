@@ -33,8 +33,10 @@ password_env 从进程环境变量读取密码，与 password 互斥。URL/用�
 配置 Debug 隐藏 URL 和密码。
 
 默认池上限 10，可设置 1–65535。默认连接与获取超时均为 10 秒，必须大于 0。
-URL 的 sslmode 控制 TLS（disable/prefer/require）；TLS 使用系统证书和主机名验证。
-上面的 disable 用于本地示例。`--check` 只检查配置/引用/模板，不建立连接。
+默认强制 TLS，使用系统证书和主机名验证；服务器拒绝 TLS 时直接失败，不会回退到
+明文认证。URL 的 `sslmode=require` 保持强制 TLS，`sslmode=prefer` 也按 require 处理。
+只有显式 `sslmode=disable` 才允许明文，上面的 disable 仅用于可信本地示例。
+URL 模板展开后同样执行该策略。`--check` 只检查配置/引用/模板，不建立连接。
 
 采样器只引用池名称，不接受连接 URL 或密码：
 

@@ -32,6 +32,30 @@ fn events(output: &Output) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn javascript_check_fails_closed_if_the_worker_is_missing() {
+    let file = TempScript::new(
+        &json!({"version":1,"name":"missing worker","groups":[{
+            "name":"g","children":[{"type":"javascript","name":"JS","script":"1 + 1;"}]
+        }]})
+        .to_string(),
+    );
+    let missing = file.0.with_extension(std::env::consts::EXE_EXTENSION);
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(env!("CARGO_BIN_EXE_rmeter"))
+            .arg(&file.0)
+            .arg("--check")
+            .env("RMETER_JS_WORKER", missing)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("isolation failed"));
+    assert!(output.stdout.is_empty());
+}
+
+#[tokio::test]
 async fn cli_runs_file_streams_json_and_sets_success_or_failure_exit_code() {
     for (body, code) in [(r#"{"code":0}"#, 0), (r#"{"code":7}"#, 1)] {
         let (url, task) = server(body, 1).await;

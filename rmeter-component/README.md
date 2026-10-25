@@ -7,6 +7,8 @@ HTTP/HTTPS 采样器、HTTP Request Defaults，以及 JSON、正文正则和 XML
 还提供 Boa 同步 JavaScript 采样器 `JavaScriptConfig` / `JavaScriptSampler`，
 通过 `vars.get/set/remove` 操作当前用户变量，支持执行限制和失败回滚；
 配置与示例见 [JavaScript 脚本变量](../README.md#javascript-脚本变量)。
+脚本检查和执行依赖单独部署的 `rmeter-js-worker`，构建和库/Tauri 集成方式见
+[worker 部署说明](../README.md#部署-javascript-worker)。
 HTTP/JDBC 配置的 `post_processors: Vec<JavaScriptConfig>` 可挂载后置处理器，
 通过只读 `prev` 提取当前返回结果；见 [后置处理器说明](../README.md#http--jdbc-后置处理器)。
 

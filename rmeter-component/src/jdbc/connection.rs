@@ -1,7 +1,7 @@
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use postgres_native_tls::MakeTlsConnector;
 use std::{collections::HashMap, fmt, sync::Mutex};
-use tokio_postgres::Config;
+use tokio_postgres::{Config, config::SslMode};
 
 use super::{JdbcConfigError, JdbcConnectionConfig, config::valid_duration};
 use crate::http::template;
@@ -158,6 +158,35 @@ fn parse_url(url: &str) -> Result<Config, JdbcConfigError> {
             "only PostgreSQL URLs are supported by the JDBC component",
         ));
     }
-    url.parse()
-        .map_err(|_| JdbcConfigError::new("invalid PostgreSQL connection URL"))
+    let mut config: Config = url
+        .parse()
+        .map_err(|_| JdbcConfigError::new("invalid PostgreSQL connection URL"))?;
+    // The driver's default Prefer permits an unauthenticated server to reject
+    // TLS, then request a cleartext password. Only an explicit disable opts out.
+    if config.get_ssl_mode() != SslMode::Disable {
+        config.ssl_mode(SslMode::Require);
+    }
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_is_required_unless_explicitly_disabled() {
+        for url in [
+            "postgresql://user@localhost/db",
+            "postgres://user@localhost/db?sslmode=prefer",
+            "jdbc:postgresql://localhost/db?sslmode=require",
+        ] {
+            assert_eq!(parse_url(url).unwrap().get_ssl_mode(), SslMode::Require);
+        }
+        assert_eq!(
+            parse_url("postgresql://localhost/db?sslmode=disable")
+                .unwrap()
+                .get_ssl_mode(),
+            SslMode::Disable
+        );
+    }
 }

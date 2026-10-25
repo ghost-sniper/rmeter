@@ -1755,11 +1755,13 @@ dependencies = [
  "chrono",
  "deadpool-postgres",
  "futures-util",
+ "libc",
  "native-tls",
  "postgres-native-tls",
  "regex",
  "reqwest",
  "rmeter-core",
+ "serde",
  "serde_json",
  "serde_json_path",
  "sxd-document",
@@ -1767,6 +1769,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "uuid",
+ "windows-sys",
 ]
 
 [[package]]

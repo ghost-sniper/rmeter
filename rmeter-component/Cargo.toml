@@ -23,6 +23,17 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 uuid = "1"
 boa_engine = { version = "0.22", default-features = false }
+serde = { workspace = true, features = ["rc"] }
+
+[[bin]]
+name = "rmeter-js-worker"
+path = "src/bin/rmeter-js-worker.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_Debug", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio.workspace = true

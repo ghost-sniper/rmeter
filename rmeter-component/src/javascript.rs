@@ -1,33 +1,33 @@
-//! Synchronous JavaScript samples. Only `vars` survives successful executions;
-//! each invocation gets a fresh Boa realm on a blocking worker.
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    fmt,
-    future::Future,
-    pin::pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    task::{Context as TaskContext, Poll},
-    time::{Duration, Instant, SystemTime},
-};
-
-use boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Script, Source, js_string,
-    module::IdleModuleLoader,
-    object::{IntegrityLevel, ObjectInitializer},
-    property::Attribute,
-};
+//! Synchronous JavaScript samples executed in resource-limited child processes.
 use rmeter_core::{
     context::UserContext,
     sampler::{SampleError, SampleResult, Sampler},
 };
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant, SystemTime},
+};
+
+mod engine;
+mod process;
+mod resource;
+
+/// Set a trusted absolute path to the separately deployed JavaScript worker.
+/// Call at host startup, before compiling plans. Repeating the same path is safe.
+pub fn set_worker_executable(
+    path: impl AsRef<std::path::Path>,
+) -> Result<(), JavaScriptConfigError> {
+    process::set_worker_executable(path.as_ref()).map_err(|e| JavaScriptConfigError(e.to_string()))
+}
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JavaScriptConfig {
     pub name: String,
     pub script: String,
@@ -89,14 +89,21 @@ impl JavaScriptSampler {
         {
             return Err(invalid("execution limits must be positive and finite"));
         }
-        // Check syntax without executing user code, including in CLI --check mode.
-        let mut context = Context::default();
-        Script::parse(Source::from_bytes(&config.script), None, &mut context)
-            .and_then(|script| script.codeblock(&mut context))
-            .map_err(|e| invalid(&e.to_string()))?;
-        Ok(Self {
-            config: Arc::new(config),
-        })
+        let config = Arc::new(config);
+        process::invoke(
+            Request {
+                config: config.clone(),
+                variables: HashMap::new(),
+                metadata: serde_json::json!({}),
+                previous: None,
+                check_only: true,
+            },
+            &AtomicBool::new(false),
+        )
+        .map_err(|(_, message)| {
+            JavaScriptConfigError(format!("JavaScript {:?}: {message}", config.name))
+        })?;
+        Ok(Self { config })
     }
 
     pub fn config(&self) -> &JavaScriptConfig {
@@ -119,7 +126,16 @@ impl JavaScriptSampler {
         let cancel = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let signal = cancel.0.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            execute(&config, variables, metadata, previous, &signal)
+            process::invoke(
+                Request {
+                    config,
+                    variables,
+                    metadata,
+                    previous,
+                    check_only: false,
+                },
+                &signal,
+            )
         })
         .await
         .map_err(|e| ("Internal", e.to_string()))?;
@@ -128,8 +144,7 @@ impl JavaScriptSampler {
     }
 }
 
-// Dropping a cancelled sample tells its worker to discard the realm at the next
-// VM budget boundary. No Boa objects cross a thread or an await boundary.
+// Dropping a sample signals the parent supervisor to kill and reap its child.
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
@@ -160,212 +175,71 @@ impl Sampler for JavaScriptSampler {
     }
 }
 
-struct Variables {
-    values: HashMap<String, String>,
-    bytes: usize,
-    limit: usize,
-    quota_exceeded: bool,
-}
-
-fn string_arg(args: &[JsValue], index: usize) -> JsResult<String> {
-    args.get(index)
-        .and_then(JsValue::as_string)
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("vars arguments must be strings")
-                .into()
-        })
-        .and_then(|s| {
-            s.to_std_string().map_err(|_| {
-                JsNativeError::typ()
-                    .with_message("vars arguments must contain valid Unicode")
-                    .into()
-            })
-        })
-}
-
-fn get_variable(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let key = string_arg(args, 0)?;
-    let state = context
-        .get_data::<RefCell<Variables>>()
-        .expect("variable bridge")
-        .borrow();
-    Ok(state
-        .values
-        .get(&key)
-        .map_or_else(JsValue::undefined, |v| JsString::from(v.as_str()).into()))
-}
-
-fn set_variable(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let key = string_arg(args, 0)?;
-    let value = string_arg(args, 1)?;
-    let mut state = context
-        .get_data::<RefCell<Variables>>()
-        .expect("variable bridge")
-        .borrow_mut();
-    let old_bytes = state.values.get(&key).map_or(0, |v| key.len() + v.len());
-    let bytes = state
-        .bytes
-        .saturating_sub(old_bytes)
-        .saturating_add(key.len())
-        .saturating_add(value.len());
-    if bytes > state.limit {
-        state.quota_exceeded = true;
-        return Err(JsNativeError::range()
-            .with_message("max_variable_bytes exceeded")
-            .into());
-    }
-    state.values.insert(key, value);
-    state.bytes = bytes;
-    Ok(JsValue::undefined())
-}
-
-fn remove_variable(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let key = string_arg(args, 0)?;
-    let mut state = context
-        .get_data::<RefCell<Variables>>()
-        .expect("variable bridge")
-        .borrow_mut();
-    let removed = state.values.remove(&key);
-    if let Some(value) = &removed {
-        state.bytes -= key.len() + value.len();
-    }
-    Ok(removed.is_some().into())
-}
-
 type ExecutionResult = Result<HashMap<String, String>, (&'static str, String)>;
 
-fn execute(
-    config: &JavaScriptConfig,
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Request {
+    config: Arc<JavaScriptConfig>,
     variables: HashMap<String, String>,
     metadata: serde_json::Value,
     previous: Option<Arc<serde_json::Value>>,
-    cancel: &AtomicBool,
-) -> ExecutionResult {
-    let started = Instant::now();
-    if cancel.load(Ordering::Relaxed) {
-        return Err(("Cancelled", "JavaScript cancelled".into()));
-    }
-    let bytes = variables.iter().map(|(k, v)| k.len() + v.len()).sum();
-    if bytes > config.max_variable_bytes {
-        return Err((
-            "JavaScriptError",
-            "initial variables exceed max_variable_bytes".into(),
-        ));
-    }
-    // Do not let Boa's default file module loader access the working directory.
-    let mut context = Context::builder()
-        .module_loader(std::rc::Rc::new(IdleModuleLoader))
-        .build()
-        .map_err(|e| ("Internal", e.to_string()))?;
-    let limits = context.runtime_limits_mut();
-    limits.set_loop_iteration_limit(config.loop_iteration_limit);
-    limits.set_recursion_limit(config.recursion_limit);
-    limits.set_stack_size_limit(config.stack_size_limit);
-    context.insert_data(RefCell::new(Variables {
-        values: variables,
-        bytes,
-        limit: config.max_variable_bytes,
-        quota_exceeded: false,
-    }));
-    let setup = |context: &mut Context| -> JsResult<()> {
-        let vars = ObjectInitializer::new(context)
-            .function(
-                NativeFunction::from_fn_ptr(get_variable),
-                js_string!("get"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(set_variable),
-                js_string!("set"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(remove_variable),
-                js_string!("remove"),
-                1,
-            )
-            .build();
-        vars.set_integrity_level(IntegrityLevel::Frozen, context)?;
-        context.register_global_property(js_string!("vars"), vars, Attribute::READONLY)?;
-        let ctx = JsValue::from_json(&metadata, context)?;
-        ctx.as_object()
-            .expect("metadata object")
-            .set_integrity_level(IntegrityLevel::Frozen, context)?;
-        context.register_global_property(js_string!("ctx"), ctx, Attribute::READONLY)?;
-        if let Some(previous) = &previous {
-            let prev = JsValue::from_json(previous, context)?;
-            prev.as_object()
-                .expect("sample result object")
-                .set_integrity_level(IntegrityLevel::Frozen, context)?;
-            context.register_global_property(js_string!("prev"), prev, Attribute::READONLY)?;
-        }
-        Ok(())
-    };
-    setup(&mut context).map_err(|e| ("Internal", e.to_string()))?;
-    let script = Script::parse(Source::from_bytes(&config.script), None, &mut context)
-        .map_err(|e| ("JavaScriptError", e.to_string()))?;
-    {
-        // This is VM scheduling only; JavaScript still runs synchronously and
-        // promise jobs are deliberately never drained.
-        let mut evaluation = pin!(script.evaluate_async_with_budget(&mut context, 256));
-        let mut task = TaskContext::from_waker(futures_util::task::noop_waker_ref());
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(("Cancelled", "JavaScript cancelled".into()));
-            }
-            if started.elapsed() >= config.timeout {
-                return Err(("Timeout", "JavaScript timeout exceeded".into()));
-            }
-            if let Poll::Ready(result) = evaluation.as_mut().poll(&mut task) {
-                result.map_err(|e| ("JavaScriptError", e.to_string()))?;
-                break;
-            }
-        }
-    }
-    if started.elapsed() >= config.timeout {
-        return Err(("Timeout", "JavaScript timeout exceeded".into()));
-    }
-    let variables = context
-        .remove_data::<RefCell<Variables>>()
-        .expect("variable bridge")
-        .into_inner();
-    if variables.quota_exceeded {
-        return Err(("JavaScriptError", "max_variable_bytes exceeded".into()));
-    }
-    Ok(variables.values)
+    check_only: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Response {
+    variables: Option<HashMap<String, String>>,
+    error: Option<(String, String)>,
+}
 
-    #[test]
-    fn dropping_sample_guard_cancels_worker_without_waiting_for_timeout() {
-        let cancel = CancelOnDrop(Arc::new(AtomicBool::new(false)));
-        let signal = cancel.0.clone();
-        let (entered, ready) = std::sync::mpsc::channel();
-        let (finished, done) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let mut config = JavaScriptConfig::new("cancel", "while (true) {}");
-            config.timeout = Duration::from_secs(60);
-            config.loop_iteration_limit = u64::MAX - 1;
-            entered.send(()).unwrap();
-            let result = execute(
-                &config,
-                HashMap::new(),
-                serde_json::json!({}),
-                None,
-                &signal,
-            );
-            finished.send(result).unwrap();
-        });
-        ready.recv_timeout(Duration::from_secs(5)).unwrap();
-        // Whether still parsing or already executing, cancellation must be seen
-        // without waiting for the script's 60-second execution timeout.
-        drop(cancel);
-        let result = done.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(result.unwrap_err().0, "Cancelled");
-        worker.join().unwrap();
+/// Entry point for the separately deployed rmeter-js-worker executable.
+#[doc(hidden)]
+pub fn worker_main() -> std::process::ExitCode {
+    use std::io::{Read, Write};
+    #[cfg(windows)]
+    // SAFETY: sets process-local error reporting flags in the dedicated worker,
+    // preventing a parser crash from opening a Windows error dialog.
+    unsafe {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+        };
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    }
+    let run = || -> Result<(), Box<dyn std::error::Error>> {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(process::READY)?;
+        stdout.flush()?;
+        // The parent attaches OS resource limits before it writes any input.
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .take(process::MAX_IPC_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > process::MAX_IPC_BYTES {
+            return Err("worker request too large".into());
+        }
+        let request: Request = serde_json::from_slice(&bytes)?;
+        let result = engine::execute(request);
+        let response = match result {
+            Ok(variables) => Response {
+                variables: Some(variables),
+                error: None,
+            },
+            Err((code, message)) => Response {
+                variables: None,
+                error: Some((code.into(), message)),
+            },
+        };
+        let bytes = serde_json::to_vec(&response)?;
+        if bytes.len() > process::MAX_IPC_BYTES {
+            return Err("worker response too large".into());
+        }
+        stdout.write_all(&bytes)?;
+        stdout.flush()?;
+        Ok(())
+    };
+    if run().is_ok() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::from(2)
     }
 }

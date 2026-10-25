@@ -50,11 +50,36 @@ JavaScript 节点产生一条采样事件，参与采样数、成功率和耗时
 | `stack_size_limit` | 16384 | Boa VM 栈元素上限，不是字节数 |
 | `max_variable_bytes` | 1048576 | 所有变量名和值的 UTF-8 字节总量，包含初始变量 |
 
-其余限制值也必须大于 0，脚本源码最大 1 MiB。脚本在阻塞工作线程中顺序执行，
-不会占用 Tokio 异步调度线程。每 256 个 Boa VM 成本单位检查一次超时和取消信号，
-超时从工作线程开始执行时计算，不含排队等待。该超时是协作式的：解析、编译和
-单次内建操作（例如正则匹配）无法在内部被抢占。变量配额与 VM 栈限制也不等于
-JavaScript 总堆内存配额；当前实现不提供进程级硬超时或总内存隔离。
+其余限制值也必须大于 0，脚本源码最大 1 MiB。语法检查、编译和运行均在独立的
+`rmeter-js-worker` 进程中执行，每次检查或执行使用新进程。父进程监督超时和取消，
+即使 Boa 卡在内建正则操作中，也会强制终止并回收子进程；worker 栈溢出或内存耗尽
+只使本次检查/采样失败。超时或异常返回不提交变量，不回退到主进程执行。
+
+每个宿主进程最多同时运行 4 个 worker，排队及启动阶段分别最多等待 5 秒。
+worker 就绪后计时：语法检查/编译上限 2 秒，脚本执行使用 `timeout_ms`，包括输入
+传输、解析、编译和执行。IPC 请求/响应各自最多 64 MiB。Windows 在发送脚本前
+使用 Job Object 设置单 worker 256 MiB 提交内存限制、禁止派生子进程和关闭任务时
+终止进程；Unix 使用 `RLIMIT_AS` 将地址空间限制为 256 MiB，设置 65 秒 CPU 时间
+兜底上限并禁用 core dump，Linux 还设置父进程退出时终止 worker。
+资源限制建立失败时拒绝执行。worker 不继承宿主环境变量，脚本及凭据不通过命令行传递。
+这是资源与故障隔离；worker 仍以宿主用户身份运行，并非低权限账户或完整的系统调用沙箱。
+
+### 部署 JavaScript worker
+
+使用 JavaScript 节点、后置处理器或相应 `--check` 前，先构建 worker：
+
+```sh
+cargo build -p rmeter-component --release --bin rmeter-js-worker
+```
+
+将同版本的 `rmeter-js-worker.exe`（Unix 为 `rmeter-js-worker`）部署到宿主可执行文件
+旁边。宿主程序也可以在解析测试计划前调用
+`rmeter::component::javascript::set_worker_executable(绝对路径)`，或在启动前设置
+`RMETER_JS_WORKER` 为可信 worker 的绝对路径。库和 Tauri 集成都需要部署该程序；
+Tauri 可将其作为随应用分发的资源并通过上述 Rust API 指定路径。
+worker 路径由宿主配置，测试计划不能覆盖；不从 PATH 或当前工作目录查找。
+Cargo 开发目录还支持从当前测试程序所在的 `target/debug` 或 `target/release` 找到 worker。
+缺少 worker、协议不匹配或启动失败会返回错误，HTTP/JDBC 不含脚本时无需 worker。
 
 ## HTTP / JDBC 后置处理器
 
@@ -137,6 +162,7 @@ HTTP 输入超限、读取不完整或不是有效 UTF-8 时，提供 `body: nul
 
 ```sh
 cargo build -p rmeter --release --lib
+cargo build -p rmeter-component --release --bin rmeter-js-worker
 ```
 
 库产物为 `target/release/librmeter.rlib`。Tauri 的 Rust 后端直接通过 Cargo
@@ -147,6 +173,7 @@ cargo build -p rmeter --release --lib
 
 ```sh
 cargo build -p rmeter --release --features cli --bin rmeter
+cargo build -p rmeter-component --release --bin rmeter-js-worker
 cargo run -p rmeter --features cli -- examples/http.json
 cargo run -p rmeter --features cli -- examples/http.json --check
 cargo run -p rmeter --features cli -- examples/http.json --var host=localhost --var port=8080
@@ -355,6 +382,9 @@ JDBC 使用 Rust 原生 PostgreSQL 驱动，不依赖 JVM 或 JDBC JAR。
 连接信息必须由 JDBC Connection Configuration 组件提供，采样器只引用其 `variable_name`。
 连接配置支持作用域及计划顶层的 `jdbc_connections` 数组；详见
 [JDBC 配置与使用](rmeter-component/src/jdbc/README.md)。
+JDBC 默认强制 TLS，验证系统信任的证书与主机名，服务器拒绝 TLS 时直接失败，
+不会降级后发送用户名或密码。`sslmode=prefer` 也按强制 TLS 处理。
+仅在可信本地开发环境需要明文时显式设置 `sslmode=disable`。
 完整示例为 [jdbc_postgresql.json](examples/jdbc_postgresql.json)，包含配置、建表、参数化写入及 IF + Loop 查询：
 
 ```sh
@@ -367,6 +397,7 @@ cargo run -p rmeter --features cli -- examples/jdbc_postgresql.json --var db_url
 ## 验证
 
 ```sh
+cargo build -p rmeter-component --bin rmeter-js-worker
 cargo test --workspace
 cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
