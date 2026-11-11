@@ -297,6 +297,13 @@ result?;
 | `if` | `name`、`condition`、`children`；可选 `evaluate_all`，默认 false |
 | `while` | `name`、`condition`、`children` |
 
+测试计划、线程组、所有子节点、全局 JDBC 配置、断言与后置处理器支持可选的
+`"enabled": false`；缺省或 `true` 为启用，仅接受布尔值。禁用项在编译执行计划前
+被过滤，不校验其执行配置、不初始化 worker/连接池、不产生采样或断言结果。
+禁用控制器/线程组会跳过整个子树，禁用配置不参与继承；启用的 JDBC 采样器如果
+只引用了禁用的连接配置，仍会报告缺少连接。禁用整个计划时产生一个无采样的完成结果，
+计划的版本与名称仍需有效。旧脚本未设置此字段时行为保持不变。
+
 根 `defaults` 与节点 `settings` 支持 `protocol`、`host`、`port`、`path`、
 `headers`、`query`、`connect_timeout_ms`、`request_timeout_ms`、`follow_redirects`、
 `max_redirects`、`save_response_body`、`max_saved_body_bytes`、`use_system_proxy`。

@@ -177,6 +177,103 @@ fn parses_group_defaults_and_rejects_bad_schema() {
 }
 
 #[test]
+fn disabled_components_skip_validation_children_and_configuration_scopes() {
+    let source = json!({"version":1,"name":"disabled","defaults":{"host":"localhost","path":"/global"},
+    "jdbc_connections":[
+        {"name":"db","variable_name":"db","url":"postgresql://localhost/test"},
+        {"enabled":false,"variable_name":"db","url":"invalid"}
+    ],"groups":[
+        {"enabled":false,"children":"invalid"},
+        {"name":"active","children":[
+            {"type":"loop","enabled":false,"count":"infinite","children":[{"type":"javascript","script":"invalid"}]},
+            {"type":"if","enabled":false,"condition":{}},
+            {"type":"while","enabled":false,"condition":{}},
+            {"type":"http_request","enabled":false,"url":"invalid"},
+            {"type":"jdbc_request","enabled":false,"connection":"missing"},
+            {"type":"javascript","enabled":false,"script":"invalid syntax ("},
+            {"type":"http_defaults","enabled":false,"settings":{"host":"wrong.test"}},
+            {"type":"jdbc_connection_configuration","enabled":false,"variable_name":"db","url":"invalid"},
+            {"type":"http_request","name":"HTTP","assertions":[
+                {"type":"regex","enabled":false,"pattern":"["},
+                {"type":"xml","enabled":false,"xpath":"["},
+                {"enabled":false,"path":"["},
+                {"type":"regex","name":"active assertion","pattern":"ok"}
+            ],"post_processors":[{"type":"javascript","enabled":false,"script":"invalid syntax ("}]},
+            {"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT 1"}
+        ]}
+    ]});
+    let plan = parse_script(&source.to_string()).unwrap();
+    assert_eq!(plan.groups.len(), 1);
+    assert_eq!(plan.groups[0].children.len(), 2);
+    let rmeter::core::plan::Node::Sample(http) = &plan.groups[0].children[0] else {
+        panic!()
+    };
+    let config = http.as_http().unwrap().config();
+    assert_eq!(config.settings.host.as_deref(), Some("localhost"));
+    assert_eq!(config.settings.path.as_deref(), Some("/global"));
+    assert_eq!(config.assertions.len(), 1);
+    assert!(config.post_processors.is_empty());
+    let mut no_connection = source.clone();
+    no_connection["jdbc_connections"][0]["enabled"] = json!(false);
+    assert!(
+        parse_script(&no_connection.to_string())
+            .unwrap_err()
+            .to_string()
+            .contains("was not configured")
+    );
+    let mut disabled_plan = source.clone();
+    disabled_plan["enabled"] = json!(false);
+    disabled_plan["groups"] = json!("invalid disabled descendants");
+    disabled_plan["defaults"] = json!("invalid");
+    assert!(
+        parse_script(&disabled_plan.to_string())
+            .unwrap()
+            .groups
+            .is_empty()
+    );
+    for invalid in [json!(null), json!("false"), json!(0)] {
+        let mut invalid_source = source.clone();
+        invalid_source["groups"][1]["children"][0]["enabled"] = invalid;
+        assert!(parse_script(&invalid_source.to_string()).is_err());
+    }
+    let mut restored = source;
+    restored["groups"][1]["children"][3]["enabled"] = json!(true);
+    assert!(parse_script(&restored.to_string()).is_err());
+}
+
+#[tokio::test]
+async fn disabled_subtrees_and_assertions_do_not_emit_samples_or_failures() {
+    let (url, server) = server(r#"{"code":0}"#, 2).await;
+    let mut source = script(&url);
+    let mut request = source["groups"][0]["children"][0].clone();
+    request["assertions"].as_array_mut().unwrap().push(json!({"enabled":false,"name":"would fail","path":"$.code","matcher":{"type":"equals","expected":999}}));
+    source["groups"][0]["children"] = json!([
+        {"type":"loop","enabled":false,"count":"infinite","children":[request.clone()]},
+        {"type":"loop","count":2,"children":[request]}
+    ]);
+    let (sender, mut receiver) = mpsc::channel(16);
+    let source = source.to_string();
+    let (result, summary) = within("disabled node run", async {
+        tokio::join!(run_script(&source, sender), async {
+            let mut summary = RunSummary::default();
+            while let Some(event) = receiver.recv().await {
+                summary.observe(&event);
+                if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                    assert!(sample.result.success);
+                    assert_eq!(sample.result.assertions.len(), 1);
+                }
+            }
+            summary
+        })
+    })
+    .await;
+    result.unwrap();
+    assert_eq!(summary.samples, 2);
+    assert_eq!(summary.passed, 2);
+    assert_eq!(within("HTTP server", server).await.unwrap().len(), 2);
+}
+
+#[test]
 fn loop_and_http_defaults_accept_optional_display_names_without_changing_execution() {
     let base = json!({"version":1,"name":"names","groups":[{"name":"g","children":[
         {"type":"loop","count":2,"children":[

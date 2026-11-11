@@ -62,8 +62,16 @@ impl From<EngineError> for ScriptError {
 /// Accepts UTF-8 JSON (an optional UTF-8 BOM is allowed), rejects unknown fields,
 /// and compiles static HTTP/JSONPath/regex configuration before any request runs.
 pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptError> {
-    let script: Script = serde_json::from_str(source.strip_prefix('\u{feff}').unwrap_or(source))
+    let mut value: Value = serde_json::from_str(source.strip_prefix('\u{feff}').unwrap_or(source))
         .map_err(ScriptError::Json)?;
+    if !take_enabled(&mut value).map_err(ScriptError::Invalid)? {
+        let object = value.as_object_mut().unwrap();
+        for key in ["defaults", "variables", "jdbc_connections"] {
+            object.remove(key);
+        }
+        object.insert("groups".into(), Value::Array(Vec::new()));
+    }
+    let script: Script = serde_json::from_value(value).map_err(ScriptError::Json)?;
     if script.version != 1 {
         return Err(ScriptError::Invalid(format!(
             "unsupported version {}, expected 1",
@@ -73,7 +81,11 @@ pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptEr
     require_name(&script.name, "plan")?;
     let defaults = script.defaults.into_config();
     let mut compiler = ComponentCompiler::new();
-    for connection in script.jdbc_connections {
+    for connection in script
+        .jdbc_connections
+        .into_iter()
+        .filter_map(|item| item.0)
+    {
         compiler
             .register_jdbc(connection.into_config())
             .map_err(|error| ScriptError::Invalid(error.to_string()))?;
@@ -82,12 +94,14 @@ pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptEr
         .groups
         .into_iter()
         .enumerate()
+        .filter_map(|(index, group)| group.0.map(|group| (index, group)))
         .map(|(index, group)| {
             let location = format!("groups[{index}] ({:?})", group.name);
             require_name(&group.name, &location)?;
             let nodes = group
                 .children
                 .into_iter()
+                .filter_map(|item| item.0)
                 .map(NodeConfig::into_node)
                 .collect::<Result<Vec<_>, _>>()?;
             let children = compiler
@@ -133,6 +147,29 @@ fn require_name(name: &str, location: &str) -> Result<(), ScriptError> {
     Ok(())
 }
 
+// Remove disabled components before deserializing their execution configuration.
+// This also skips validation, worker compilation and child configuration scopes.
+struct Enabled<T>(Option<T>);
+fn take_enabled(value: &mut Value) -> Result<bool, String> {
+    let object = value.as_object_mut().ok_or("component must be an object")?;
+    match object.remove("enabled") {
+        None => Ok(true),
+        Some(Value::Bool(enabled)) => Ok(enabled),
+        _ => Err("enabled must be a boolean".into()),
+    }
+}
+impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Enabled<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = Value::deserialize(deserializer)?;
+        if !take_enabled(&mut value).map_err(serde::de::Error::custom)? {
+            return Ok(Self(None));
+        }
+        serde_json::from_value(value)
+            .map(|item| Self(Some(item)))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Script {
@@ -143,8 +180,8 @@ struct Script {
     #[serde(default)]
     defaults: DefaultsConfig,
     #[serde(default)]
-    jdbc_connections: Vec<ConnectionConfig>,
-    groups: Vec<GroupConfig>,
+    jdbc_connections: Vec<Enabled<ConnectionConfig>>,
+    groups: Vec<Enabled<GroupConfig>>,
 }
 
 #[derive(Deserialize)]
@@ -160,7 +197,7 @@ struct GroupConfig {
     max_duration_ms: Option<u64>,
     #[serde(default)]
     on_error: PolicyConfig,
-    children: Vec<NodeConfig>,
+    children: Vec<Enabled<NodeConfig>>,
 }
 fn one() -> usize {
     1
@@ -316,9 +353,9 @@ enum NodeConfig {
         variable_names: Vec<String>,
         row_count_variable: Option<String>,
         #[serde(default)]
-        assertions: Vec<AssertionConfig>,
+        assertions: Vec<Enabled<AssertionConfig>>,
         #[serde(default)]
-        post_processors: Vec<PostProcessorConfig>,
+        post_processors: Vec<Enabled<PostProcessorConfig>>,
     },
     HttpRequest {
         name: String,
@@ -330,10 +367,10 @@ enum NodeConfig {
         #[serde(default)]
         body: BodyConfig,
         #[serde(default)]
-        assertions: Vec<AssertionConfig>,
+        assertions: Vec<Enabled<AssertionConfig>>,
         max_assertion_body_bytes: Option<usize>,
         #[serde(default)]
-        post_processors: Vec<PostProcessorConfig>,
+        post_processors: Vec<Enabled<PostProcessorConfig>>,
         max_post_processor_body_bytes: Option<usize>,
     },
     HttpDefaults {
@@ -341,28 +378,28 @@ enum NodeConfig {
         settings: DefaultsConfig,
     },
     Sequence {
-        children: Vec<NodeConfig>,
+        children: Vec<Enabled<NodeConfig>>,
     },
     Loop {
         name: Option<String>,
         count: CountConfig,
-        children: Vec<NodeConfig>,
+        children: Vec<Enabled<NodeConfig>>,
     },
     Controller {
         name: String,
-        children: Vec<NodeConfig>,
+        children: Vec<Enabled<NodeConfig>>,
     },
     If {
         name: String,
         condition: ConditionConfig,
         #[serde(default)]
         evaluate_all: bool,
-        children: Vec<NodeConfig>,
+        children: Vec<Enabled<NodeConfig>>,
     },
     While {
         name: String,
         condition: ConditionConfig,
-        children: Vec<NodeConfig>,
+        children: Vec<Enabled<NodeConfig>>,
     },
 }
 fn get() -> String {
@@ -421,9 +458,10 @@ impl ConnectionConfig {
 }
 impl NodeConfig {
     fn into_node(self) -> Result<ComponentNode, ScriptError> {
-        let children = |nodes: Vec<NodeConfig>| {
+        let children = |nodes: Vec<Enabled<NodeConfig>>| {
             nodes
                 .into_iter()
+                .filter_map(|item| item.0)
                 .map(Self::into_node)
                 .collect::<Result<Vec<_>, _>>()
         };
@@ -472,10 +510,12 @@ impl NodeConfig {
                 request.row_count_variable = row_count_variable;
                 request.post_processors = post_processors
                     .into_iter()
+                    .filter_map(|item| item.0)
                     .map(PostProcessorConfig::into_config)
                     .collect::<Result<_, _>>()?;
                 request.assertions = assertions
                     .into_iter()
+                    .filter_map(|item| item.0)
                     .map(AssertionConfig::into_config)
                     .collect::<Result<_, _>>()?;
                 ComponentNode::JdbcRequest(request)
@@ -504,6 +544,7 @@ impl NodeConfig {
                 request.body = body.into_body();
                 request.post_processors = post_processors
                     .into_iter()
+                    .filter_map(|item| item.0)
                     .map(PostProcessorConfig::into_config)
                     .collect::<Result<_, _>>()?;
                 if let Some(limit) = max_post_processor_body_bytes {
@@ -511,6 +552,7 @@ impl NodeConfig {
                 }
                 request.assertions = assertions
                     .into_iter()
+                    .filter_map(|item| item.0)
                     .map(AssertionConfig::into_config)
                     .collect::<Result<Vec<_>, _>>()?;
                 if let Some(limit) = max_assertion_body_bytes {
