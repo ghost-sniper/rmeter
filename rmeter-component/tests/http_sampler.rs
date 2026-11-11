@@ -285,7 +285,10 @@ async fn defaults_and_per_sample_variables_produce_encoded_requests() {
             ("X-Default".into(), "kept".into()),
             ("X-User".into(), "outer".into()),
         ]),
-        query: Some(vec![("key".into(), "old".into())]),
+        query: Some(vec![
+            ("default-only".into(), "must-not-leak".into()),
+            ("key".into(), "old".into()),
+        ]),
         ..Default::default()
     };
     let mut request = HttpRequestConfig::new("user ${id}");
@@ -321,7 +324,7 @@ async fn defaults_and_per_sample_variables_produce_encoded_requests() {
                 ("key".into(), "second".into()),
             ]
         );
-        assert_eq!(request.header("x-default"), Some("kept"));
+        assert_eq!(request.header("x-default"), None);
         assert_eq!(request.header("x-user"), Some(id));
     }
 }

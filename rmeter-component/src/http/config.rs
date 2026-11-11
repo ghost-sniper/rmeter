@@ -23,7 +23,8 @@ impl<T: Clone> Setting<T> {
 
 /// A configuration component: it never executes a request or emits a sample.
 /// None means inherit. An explicit empty header/query list clears inherited entries.
-/// Nonempty lists override matching keys and retain other inherited entries.
+/// Between defaults components, nonempty lists override matching keys and retain
+/// other inherited entries. A sampler's explicit lists replace the whole list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HttpRequestDefaults {
     pub protocol: Option<String>,
@@ -126,7 +127,9 @@ pub struct HttpRequestConfig {
     /// An absolute URL overrides the protocol/host/port/path fields.
     pub url: Option<String>,
     pub method: Method,
-    /// Explicit request settings override the surrounding Defaults.
+    /// Explicit request settings override the surrounding Defaults field by field.
+    /// Headers and query lists replace the whole inherited list, preserving order
+    /// and duplicate entries; None inherits and Some(vec![]) clears the list.
     pub settings: HttpRequestDefaults,
     pub body: HttpBody,
     pub assertions: Vec<AssertionConfig>,

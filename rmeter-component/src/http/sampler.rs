@@ -59,7 +59,16 @@ impl HttpSampler {
         defaults: &HttpRequestDefaults,
         clients: &mut HashMap<ClientOptions, Client>,
     ) -> Result<Self, HttpConfigError> {
-        config.settings = defaults.merged_with(&config.settings).effective();
+        let mut settings = defaults.merged_with(&config.settings);
+        // Sampler lists replace the entire inherited list. Defaults components
+        // still merge by key when compiling their surrounding scopes.
+        if config.settings.headers.is_some() {
+            settings.headers.clone_from(&config.settings.headers);
+        }
+        if config.settings.query.is_some() {
+            settings.query.clone_from(&config.settings.query);
+        }
+        config.settings = settings.effective();
         if config.max_post_processor_body_bytes == 0 {
             return Err(HttpConfigError::new(
                 "max_post_processor_body_bytes must be positive",

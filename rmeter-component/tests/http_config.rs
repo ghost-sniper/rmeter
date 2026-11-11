@@ -61,6 +61,52 @@ fn explicit_values_override_defaults_without_losing_other_settings() {
 }
 
 #[test]
+fn sampler_lists_replace_independently_and_keep_scalar_inheritance() {
+    let defaults = HttpRequestDefaults {
+        host: Some("example.test".into()),
+        path: Some("/default".into()),
+        request_timeout: Setting::Value(Some(Duration::from_secs(5))),
+        headers: Some(vec![("X-Default".into(), "outer".into())]),
+        query: Some(vec![("default".into(), "outer".into())]),
+        ..Default::default()
+    };
+    for headers in [
+        None,
+        Some(vec![]),
+        Some(vec![
+            ("X-Own".into(), "one".into()),
+            ("X-Own".into(), "two".into()),
+        ]),
+    ] {
+        for query in [
+            None,
+            Some(vec![]),
+            Some(vec![
+                ("own".into(), "one".into()),
+                ("own".into(), "two".into()),
+            ]),
+        ] {
+            let mut request = HttpRequestConfig::new("override");
+            request.settings.headers = headers.clone();
+            request.settings.query = query.clone();
+            request.settings.path = Some("/own".into());
+            request.settings.follow_redirects = Some(false);
+            let sampler = HttpSampler::with_defaults(request, &defaults).unwrap();
+            let actual = &sampler.config().settings;
+            assert_eq!(
+                actual.headers,
+                headers.clone().or_else(|| defaults.headers.clone())
+            );
+            assert_eq!(actual.query, query.or_else(|| defaults.query.clone()));
+            assert_eq!(actual.host, defaults.host);
+            assert_eq!(actual.path.as_deref(), Some("/own"));
+            assert_eq!(actual.request_timeout, defaults.request_timeout);
+            assert_eq!(actual.follow_redirects, Some(false));
+        }
+    }
+}
+
+#[test]
 fn empty_collections_clear_inherited_values() {
     let outer = HttpRequestDefaults {
         headers: Some(vec![("X-Default".into(), "value".into())]),
