@@ -24,7 +24,7 @@ fn jdbc_connections_compile_with_http_and_are_shared_across_groups() {
         "name":"database","variable_name":"db","driver":"postgresql","url":"postgresql://localhost/test"
     }],"groups":[
         {"name":"a","children":[{"type":"http_request","name":"HTTP","url":"http://localhost/"},
-            {"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT $1::integer","parameters":[1]}]},
+            {"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT $1::integer","parameters":[1],"result_variable":"rows","variable_names":[" id ","","name"]}]},
         {"name":"b","children":[{"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT 1"}]}
     ]});
     let plan = parse_script(&source.to_string()).unwrap();
@@ -38,6 +38,14 @@ fn jdbc_connections_compile_with_http_and_are_shared_across_groups() {
     let rmeter::core::plan::Node::Sample(second) = &plan.groups[1].children[0] else {
         panic!()
     };
+    assert_eq!(
+        first.as_jdbc().unwrap().config().variable_names,
+        vec!["id", "", "name"]
+    );
+    assert_eq!(
+        first.as_jdbc().unwrap().config().result_variable.as_deref(),
+        Some("rows")
+    );
     assert!(std::sync::Arc::ptr_eq(
         first.as_jdbc().unwrap().connection(),
         second.as_jdbc().unwrap().connection()

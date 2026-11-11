@@ -3,6 +3,7 @@ mod config;
 mod connection;
 mod sampler;
 mod value;
+mod variables;
 
 pub use JdbcConnectionConfig as JDBCConnectionConfiguration;
 pub use JdbcSampler as JDBCSampler;

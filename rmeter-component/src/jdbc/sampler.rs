@@ -29,7 +29,7 @@ pub struct JdbcSampler {
 }
 impl JdbcSampler {
     pub fn new(
-        config: JdbcSamplerConfig,
+        mut config: JdbcSamplerConfig,
         connection: Arc<JdbcConnection>,
     ) -> Result<Self, JdbcConfigError> {
         if config.label.trim().is_empty()
@@ -66,6 +66,7 @@ impl JdbcSampler {
                 "result_variable and row_count_variable must differ",
             ));
         }
+        super::variables::validate(&mut config)?;
         for value in [&config.label, &config.sql] {
             template::validate(value).map_err(|e| JdbcConfigError::new(e.message))?;
         }
@@ -195,6 +196,8 @@ impl JdbcSampler {
             }
         };
         let count = rows.len();
+        let variables =
+            super::variables::export(&self.config, &columns, &rows).map_err(Failure::limit)?;
         let body = serde_json::to_vec(
             &json!({"columns":columns,"rows":rows,"row_count":count,"rows_affected":affected}),
         )
@@ -204,12 +207,12 @@ impl JdbcSampler {
         }
         transaction.commit().await?;
         lease.clean = true;
-        Ok(Payload { body, count })
+        Ok(Payload { body, variables })
     }
 }
 struct Payload {
     body: Vec<u8>,
-    count: usize,
+    variables: std::collections::HashMap<String, String>,
 }
 struct Failure(String, String);
 impl Failure {
@@ -255,15 +258,6 @@ impl Sampler for JdbcSampler {
             response_body: None,
             assertions: vec![],
         };
-        for key in [
-            &self.config.result_variable,
-            &self.config.row_count_variable,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            context.variables.remove(key);
-        }
         let expand = || -> Result<(String, String, Vec<Parameter>), Failure> {
             let expand = |text: &str| {
                 template::expand(text, &context.variables).map_err(|e| Failure::config(e.message))
@@ -285,7 +279,10 @@ impl Sampler for JdbcSampler {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok((label, sql, parameters))
         };
-        let output = match expand() {
+        // A query can use its previous result as input before replacing it.
+        let expanded = expand();
+        super::variables::clear(&self.config, &mut context.variables);
+        let output = match expanded {
             Err(error) => Err(error),
             Ok((label, sql, parameters)) => {
                 result.label = label;
@@ -302,16 +299,7 @@ impl Sampler for JdbcSampler {
         let mut payload = None;
         match output {
             Ok(value) => {
-                if let Some(key) = &self.config.result_variable {
-                    context
-                        .variables
-                        .insert(key.clone(), String::from_utf8(value.body.clone()).unwrap());
-                }
-                if let Some(key) = &self.config.row_count_variable {
-                    context
-                        .variables
-                        .insert(key.clone(), value.count.to_string());
-                }
+                context.variables.extend(value.variables);
                 result.bytes_received = value.body.len() as u64;
                 result.success = true;
                 result.response_code = Some("00000".into());

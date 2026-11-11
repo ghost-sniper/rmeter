@@ -82,7 +82,10 @@ pub struct JdbcSamplerConfig {
     pub max_rows: usize,
     pub max_result_bytes: usize,
     pub save_response_body: bool,
+    /// JSONArray of row maps, plus `<name>_#` containing the selected row count.
     pub result_variable: Option<String>,
+    /// Column-position variable names; empty entries skip a column.
+    pub variable_names: Vec<String>,
     pub row_count_variable: Option<String>,
     pub assertions: Vec<AssertionConfig>,
     /// Run after assertions, with the complete result JSON even if report saving is off.
@@ -105,6 +108,7 @@ impl JdbcSamplerConfig {
             max_result_bytes: 8 * 1024 * 1024,
             save_response_body: true,
             result_variable: None,
+            variable_names: Vec::new(),
             row_count_variable: None,
             assertions: Vec::new(),
             post_processors: Vec::new(),

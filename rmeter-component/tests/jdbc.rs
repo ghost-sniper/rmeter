@@ -127,12 +127,17 @@ async fn missing_runtime_variables_fail_with_diagnostics_and_clear_stale_results
     config.parameters = vec![json!("${missing}")];
     config.result_variable = Some("result".into());
     config.row_count_variable = Some("count".into());
+    config.variable_names = vec!["id".into()];
     config.add_assertion(JsonAssertionConfig::equals("row", "$.row_count", json!(1)));
     let sampler = JdbcSampler::new(config, connection("postgresql://localhost/db")).unwrap();
     let mut context = UserContext::new("g", 0);
     context.variables = HashMap::from([
         ("result".into(), "old".into()),
         ("count".into(), "8".into()),
+        ("result_#".into(), "8".into()),
+        ("id_#".into(), "2".into()),
+        ("id_1".into(), "old".into()),
+        ("id_2".into(), "old".into()),
     ]);
     let result = sampler.sample(&mut context).await.unwrap();
     assert!(!result.success);
@@ -141,6 +146,90 @@ async fn missing_runtime_variables_fail_with_diagnostics_and_clear_stale_results
     assert!(!result.assertions[0].success);
     assert!(!context.variables.contains_key("result"));
     assert!(!context.variables.contains_key("count"));
+    assert!(!context.variables.contains_key("result_#"));
+    assert!(!context.variables.contains_key("id_1"));
+    assert!(!context.variables.contains_key("id_2"));
+    assert!(!context.variables.contains_key("id_#"));
+}
+
+#[tokio::test]
+#[ignore = "requires RMETER_POSTGRES_URL; read-only generated rows"]
+async fn postgres_result_arrays_and_column_variables_replace_previous_rows() {
+    let connection = real_connection();
+    let mut config = JdbcSamplerConfig::new(
+        "variables",
+        "db",
+        "SELECT n AS id, 'skip'::text AS ignored, CASE WHEN n=2 THEN NULL ELSE '用户-' || n END AS name, n%2=0 AS enabled, jsonb_build_object('n',n) AS payload FROM generate_series(1,$1::int) n ORDER BY n",
+    );
+    config.parameters = vec![json!("${limit}")];
+    config.result_variable = Some("rows".into());
+    config.variable_names = vec![
+        "id".into(),
+        "".into(),
+        "name".into(),
+        "enabled".into(),
+        "payload".into(),
+        "extra".into(),
+    ];
+    config.save_response_body = false;
+    let sampler = JdbcSampler::new(config.clone(), connection.clone()).unwrap();
+    let mut context = UserContext::new("g", 0);
+    for count in [3, 1, 0, 2] {
+        context.variables.insert("limit".into(), count.to_string());
+        let sample = sampler.sample(&mut context).await.unwrap();
+        assert!(sample.success, "{:?}", sample.response_message);
+        assert!(sample.response_body.is_none());
+        let rows: Value = serde_json::from_str(&context.variables["rows"]).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), count);
+        for name in ["rows", "id", "name", "enabled", "payload", "extra"] {
+            assert_eq!(context.variables[&format!("{name}_#")], count.to_string());
+        }
+        assert!(!context.variables.contains_key(&format!("id_{}", count + 1)));
+        assert!(!context.variables.contains_key("name_2"));
+        assert!(!context.variables.contains_key("extra_1"));
+        if count > 0 {
+            assert_eq!(rows[0]["id"], 1);
+            assert_eq!(context.variables["id_1"], "1");
+            assert_eq!(context.variables["name_1"], "用户-1");
+            assert_eq!(context.variables["enabled_1"], "false");
+            assert_eq!(
+                serde_json::from_str::<Value>(&context.variables["payload_1"]).unwrap(),
+                json!({"n":1})
+            );
+        }
+    }
+    let mut chained = config.clone();
+    chained.parameters = vec![json!("${id_#}")];
+    assert!(
+        JdbcSampler::new(chained, connection.clone())
+            .unwrap()
+            .sample(&mut context)
+            .await
+            .unwrap()
+            .success
+    );
+    assert_eq!(context.variables["id_#"], "2");
+    let mut isolated = UserContext::new("g", 1);
+    isolated.variables.insert("limit".into(), "1".into());
+    assert!(sampler.sample(&mut isolated).await.unwrap().success);
+    assert_eq!(context.variables["id_#"], "2");
+    assert_eq!(isolated.variables["id_#"], "1");
+    for sql in ["SELECT 1/0", "SELECT pg_sleep(1)"] {
+        let mut failed = config.clone();
+        failed.sql = sql.into();
+        failed.parameters.clear();
+        failed.query_timeout = Duration::from_millis(100);
+        let failure = JdbcSampler::new(failed, connection.clone())
+            .unwrap()
+            .sample(&mut context)
+            .await
+            .unwrap();
+        assert!(!failure.success);
+        for key in ["rows", "rows_#", "id_#", "id_1", "id_2"] {
+            assert!(!context.variables.contains_key(key));
+        }
+        assert!(sampler.sample(&mut context).await.unwrap().success);
+    }
 }
 
 #[tokio::test]
@@ -191,10 +280,18 @@ async fn postgres_parameters_results_types_pool_reuse_and_assertions() {
         assert_eq!(output["rows"][0][12], "2026-10-20T12:30:00+00:00");
         assert_eq!(output["rows"][0][13], 1.25);
         assert_eq!(context.variables["count"], "1");
+        let expected: serde_json::Map<String, Value> = output["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .zip(output["rows"][0].as_array().unwrap().iter().cloned())
+            .collect();
         assert_eq!(
             serde_json::from_str::<Value>(&context.variables["result"]).unwrap(),
-            output
+            json!([expected])
         );
+        assert_eq!(context.variables["result_#"], "1");
     }
     let sql = "SELECT pg_backend_pid()";
     let a = sample(connection.clone(), sql, JdbcQueryType::Select).await;

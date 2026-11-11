@@ -312,6 +312,8 @@ enum NodeConfig {
         max_result_bytes: Option<usize>,
         save_response_body: Option<bool>,
         result_variable: Option<String>,
+        #[serde(default)]
+        variable_names: Vec<String>,
         row_count_variable: Option<String>,
         #[serde(default)]
         assertions: Vec<AssertionConfig>,
@@ -441,6 +443,7 @@ impl NodeConfig {
                 max_result_bytes,
                 save_response_body,
                 result_variable,
+                variable_names,
                 row_count_variable,
                 assertions,
                 post_processors,
@@ -465,6 +468,7 @@ impl NodeConfig {
                     request.save_response_body = value;
                 }
                 request.result_variable = result_variable;
+                request.variable_names = variable_names;
                 request.row_count_variable = row_count_variable;
                 request.post_processors = post_processors
                     .into_iter()

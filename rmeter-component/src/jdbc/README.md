@@ -86,8 +86,18 @@ query_timeout_ms 默认 30 秒，覆盖取连接、执行、读取和提交，�
 且不超过 PostgreSQL statement_timeout 的整数毫秒范围。还设置事务内的服务端 statement_timeout。
 超时或取消会从池移除当前连接，发送服务端取消请求，再关闭连接，避免污染后续采样。
 
-result_variable 保存完整 JSON 字符串，row_count_variable 保存所选行数的字符串。
-采样开始会清除这些变量的旧值；数据库执行失败时不会沿用旧结果。
+结果变量提供两种可独立或同时使用的保存方式：
+
+- `result_variable: "result"`：`result` 保存行对象的 JSONArray 字符串，例如 `[{"id":42,"display_name":"Alice"}]`，`result_#` 为行数。JSON 保留类型与 null，同名列取最后一列的值，建议使用 SQL 别名区分。
+- `variable_names: ["id", "", "name"]`：按查询列序号映射，第 2 列跳过。`id_1`、`id_2` 为第 1 列各行的字符串值，`name_1`、`name_2` 为第 3 列各行；每个非空名称的 `名称_#` 为行数。多余名称仅生成行数，少填名称则忽略后续列。SQL NULL 不生成对应单元格变量，JSON 值序列化为 JSON 文本。
+
+`row_count_variable` 仍可额外指定行数变量。零行时数组为 `[]`、所有行数为 `0`，无行变量。
+每次采样开始按上次的 `名称_#` 清除旧行变量及结果、行数变量；行数减少、查询失败、超时、取消时不会沿用旧结果。
+导出变量的名称和值总字节数也受 `max_result_bytes` 限制，超限时整次采样失败，且不写入部分变量。
+同一采样器的输出名称不能互相覆盖；按列名称首尾空白会去除。
+
+注意：`result_variable` 由旧版响应包对象改为 JSONArray；原 `JSON.parse(vars.get('result')).rows[0][0]` 应改为 `JSON.parse(vars.get('result'))[0].id`。响应体和断言仍使用上文的 `columns/rows/row_count/rows_affected` 格式。
+参考 [JMeter JDBC Request](https://jmeter.apache.org/usermanual/component_reference.html#JDBC_Request) 的列变量与行对象列表规则；rmeter 使用 JSON 字符串作为整表变量，并额外提供整表 `变量_#`。
 save_response_body 默认 true，设为 false 不影响断言与结果变量。
 现有 JSON/正文正则/XML 组件均可配置，JSON 结果通常使用 JSONPath 或正文正则。
 断言失败保留查询结果，同时把采样 success 置为 false，参与错误策略和 IF/While。
