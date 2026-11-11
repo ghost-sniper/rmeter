@@ -453,3 +453,19 @@ XPath 使用 SXD XPath 1.0；XPath2 使用 Xee XPath 3.1 引擎，支持 XPath 2
 五种提取器都在同版本 `rmeter-js-worker` 中解析/执行，复用进程内存、执行超时和取消回收机制，避免复杂 XPath2 表达式阻塞宿主。worker 缺失时带提取器的计划会明确校验失败；不使用 JavaScript/提取器的 HTTP/JDBC 仍可运行。提取输入使用完整 UTF-8 HTTP 响应，与报告预览保存无关，受 `max_post_processor_body_bytes` 限制（默认 8 MiB）。输入不可用时失败，不对截断正文做部分提取。处理器只增加诊断日志，不额外增加采样数量。
 
 Rust API：HTTP 的 `post_processors` 改为 `Vec<HttpPostProcessorConfig>`；`add_post_processor` 接受 JavaScriptConfig 或 ExtractorConfig，也可以将它们 `.into()` 放入数组。原生 JSON 中现有 JavaScript 后置处理器格式不变。
+
+## 定时器
+
+固定定时器和高斯随机定时器采用 [JMeter 的作用域规则](https://jmeter.apache.org/usermanual/component_reference.html#Timers)。测试计划的 `timers` 影响所有线程组；线程组/控制器 `children` 中的定时器影响同级及后代采样器，与同级排列位置无关；采样器自身 `timers` 只影响自身。所有适用定时器的延迟累加，每次采样、每轮循环和每个用户分别执行，空作用域及未进入的条件分支不等待。
+
+```json
+{"type":"constant_timer","name":"固定等待","delay_ms":300}
+```
+
+```json
+{"type":"gaussian_random_timer","name":"高斯等待","deviation_ms":100,"offset_ms":300}
+```
+
+高斯延迟与 JMeter 实现一致：`abs(N(0,1) * deviation_ms + offset_ms)` 后截去小数，每次独立抽样。参数必须是 0–9007199254740991 的有限非负数；延迟/偏移是整数，偏差允许小数。计算结果也以此上限截断。参数支持字符串 `${pause_ms}`，在前置处理器之后读取当前用户变量；不解释 JMeter 函数或 `timer.factor` 属性。
+
+执行顺序：前置处理器 → 计算并累加延迟 → 异步等待 → 采样器 → 后置处理器 → 断言。等待不计入采样开始时间和响应耗时，但计入线程组最长运行时间；停止或关闭通道可取消等待，不发请求、不产生额外采样。动态参数错误使父采样失败（`TimerError`），跳过后续阶段并遵循错误策略。禁用定时器在校验前跳过。仅使用定时器的 HTTP/JDBC 计划不需要 JavaScript worker。

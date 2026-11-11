@@ -102,6 +102,7 @@ impl JdbcSampler {
             .map(ResponseAssertion::new)
             .collect::<Result<_, _>>()
             .map_err(|e| JdbcConfigError::new(e.to_string()))?;
+        crate::timer::validate(&config.timers).map_err(JdbcConfigError::new)?;
         let pre_processors = crate::post_processor::compile(&config.pre_processors)
             .map_err(|e| JdbcConfigError::new(e.to_string()))?;
         let post_processors = crate::post_processor::compile(&config.post_processors)
@@ -265,6 +266,10 @@ impl Sampler for JdbcSampler {
         if !crate::post_processor::run_pre(&self.pre_processors, context, &mut result).await {
             super::variables::clear(&self.config, &mut context.variables);
             result.elapsed = started.elapsed();
+            return Ok(result);
+        }
+        if !crate::timer::run(&self.config.timers, context, &mut result).await {
+            super::variables::clear(&self.config, &mut context.variables);
             return Ok(result);
         }
         let started = Instant::now();

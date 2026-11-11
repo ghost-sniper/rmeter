@@ -3,6 +3,8 @@
 pub mod assertion;
 pub mod component;
 pub mod extractor;
+pub mod timer;
+pub use timer::{TimerConfig, TimerValue};
 pub mod http;
 pub mod javascript;
 pub mod jdbc;

@@ -75,6 +75,7 @@ impl HttpSampler {
                 "max_post_processor_body_bytes must be positive",
             ));
         }
+        crate::timer::validate(&config.timers).map_err(HttpConfigError::new)?;
         let pre_processors = crate::post_processor::compile(&config.pre_processors)
             .map_err(|e| HttpConfigError::new(e.to_string()))?;
         let post_processors = crate::post_processor::compile_http(&config.post_processors)
@@ -280,6 +281,9 @@ impl Sampler for HttpSampler {
         };
         if !crate::post_processor::run_pre(&self.pre_processors, context, &mut result).await {
             result.elapsed = started.elapsed();
+            return Ok(result);
+        }
+        if !crate::timer::run(&self.config.timers, context, &mut result).await {
             return Ok(result);
         }
         let started = Instant::now();

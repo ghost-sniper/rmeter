@@ -55,6 +55,7 @@ pub enum ComponentNode {
     JavaScript(JavaScriptConfig),
     HttpRequest(HttpRequestConfig),
     HttpDefaults(HttpRequestDefaults),
+    Timer(crate::TimerConfig),
     JdbcConnection(JdbcConnectionConfig),
     JdbcRequest(JdbcSamplerConfig),
     Sequence(Vec<Self>),
@@ -92,6 +93,7 @@ impl std::error::Error for ComponentConfigError {}
 pub struct ComponentCompiler {
     clients: HashMap<ClientOptions, reqwest::Client>,
     connections: HashMap<String, Arc<JdbcConnection>>,
+    timers: Vec<crate::TimerConfig>,
 }
 impl ComponentCompiler {
     pub fn new() -> Self {
@@ -113,24 +115,43 @@ impl ComponentCompiler {
             .insert(connection.config().variable_name.clone(), connection);
         Ok(())
     }
+    pub fn register_timer(
+        &mut self,
+        timer: crate::TimerConfig,
+    ) -> Result<(), ComponentConfigError> {
+        timer.validate().map_err(ComponentConfigError)?;
+        self.timers.push(timer);
+        Ok(())
+    }
     pub fn compile(
         &mut self,
         nodes: Vec<ComponentNode>,
         defaults: &HttpRequestDefaults,
     ) -> Result<Vec<Node<ComponentSampler>>, ComponentConfigError> {
-        self.scope(nodes, defaults, &self.connections.clone())
+        self.scope(
+            nodes,
+            defaults,
+            &self.connections.clone(),
+            &self.timers.clone(),
+        )
     }
     fn scope(
         &mut self,
         nodes: Vec<ComponentNode>,
         inherited: &HttpRequestDefaults,
         inherited_jdbc: &HashMap<String, Arc<JdbcConnection>>,
+        inherited_timers: &[crate::TimerConfig],
     ) -> Result<Vec<Node<ComponentSampler>>, ComponentConfigError> {
+        let mut timers = inherited_timers.to_vec();
         let mut defaults = inherited.clone();
         let mut connections = inherited_jdbc.clone();
         let mut declared = HashSet::new();
         for node in &nodes {
             match node {
+                ComponentNode::Timer(timer) => {
+                    timer.validate().map_err(ComponentConfigError)?;
+                    timers.push(timer.clone());
+                }
                 ComponentNode::HttpDefaults(config) => defaults = defaults.merged_with(config),
                 ComponentNode::JdbcConnection(config) => {
                     if !declared.insert(config.variable_name.clone()) {
@@ -151,20 +172,25 @@ impl ComponentCompiler {
         let mut compiled = Vec::new();
         for node in nodes {
             compiled.push(match node {
-                ComponentNode::JavaScript(config) => {
+                ComponentNode::JavaScript(mut config) => {
+                    config.timers.splice(0..0, timers.iter().cloned());
                     Node::Sample(ComponentSampler::JavaScript(Box::new(
                         JavaScriptSampler::new(config)
                             .map_err(|e| ComponentConfigError(e.to_string()))?,
                     )))
                 }
-                ComponentNode::HttpDefaults(_) | ComponentNode::JdbcConnection(_) => continue,
-                ComponentNode::HttpRequest(config) => {
+                ComponentNode::HttpDefaults(_)
+                | ComponentNode::JdbcConnection(_)
+                | ComponentNode::Timer(_) => continue,
+                ComponentNode::HttpRequest(mut config) => {
+                    config.timers.splice(0..0, timers.iter().cloned());
                     Node::Sample(ComponentSampler::Http(Box::new(
                         HttpSampler::prepare(config, &defaults, &mut self.clients)
                             .map_err(|e| ComponentConfigError(e.to_string()))?,
                     )))
                 }
-                ComponentNode::JdbcRequest(config) => {
+                ComponentNode::JdbcRequest(mut config) => {
+                    config.timers.splice(0..0, timers.iter().cloned());
                     let connection = connections.get(&config.connection).ok_or_else(|| {
                         ComponentConfigError(format!(
                             "JDBC request {:?}: connection {:?} was not configured",
@@ -177,15 +203,18 @@ impl ComponentCompiler {
                     )))
                 }
                 ComponentNode::Sequence(children) => {
-                    Node::Sequence(self.scope(children, &defaults, &connections)?)
+                    Node::Sequence(self.scope(children, &defaults, &connections, &timers)?)
                 }
                 ComponentNode::Loop { count, children } => Node::Loop {
                     count,
-                    children: self.scope(children, &defaults, &connections)?,
+                    children: self.scope(children, &defaults, &connections, &timers)?,
                 },
-                ComponentNode::Controller { name, children } => Node::Controller(
-                    GenericController::new(name, self.scope(children, &defaults, &connections)?),
-                ),
+                ComponentNode::Controller { name, children } => {
+                    Node::Controller(GenericController::new(
+                        name,
+                        self.scope(children, &defaults, &connections, &timers)?,
+                    ))
+                }
                 ComponentNode::If {
                     name,
                     condition,
@@ -195,7 +224,7 @@ impl ComponentCompiler {
                     let mut controller = IfController::new(
                         name,
                         condition,
-                        self.scope(children, &defaults, &connections)?,
+                        self.scope(children, &defaults, &connections, &timers)?,
                     );
                     controller.evaluate_all = evaluate_all;
                     Node::If(controller)
@@ -207,7 +236,7 @@ impl ComponentCompiler {
                 } => Node::While(WhileController::new(
                     name,
                     condition,
-                    self.scope(children, &defaults, &connections)?,
+                    self.scope(children, &defaults, &connections, &timers)?,
                 )),
             });
         }

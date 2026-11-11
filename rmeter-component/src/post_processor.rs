@@ -10,9 +10,12 @@ pub(crate) fn compile(
         .iter()
         .cloned()
         .map(|config| {
-            if !config.pre_processors.is_empty() || !config.post_processors.is_empty() {
+            if !config.pre_processors.is_empty()
+                || !config.post_processors.is_empty()
+                || !config.timers.is_empty()
+            {
                 return Err(JavaScriptConfigError(
-                    "processors cannot contain processors".into(),
+                    "processors cannot contain processors or timers".into(),
                 ));
             }
             JavaScriptSampler::new(config)

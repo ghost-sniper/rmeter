@@ -89,6 +89,7 @@ pub struct JdbcSamplerConfig {
     pub row_count_variable: Option<String>,
     pub assertions: Vec<AssertionConfig>,
     /// Run before SQL and parameter expansion.
+    pub timers: Vec<crate::TimerConfig>,
     pub pre_processors: Vec<crate::JavaScriptConfig>,
     /// Run after the sampler and before assertions, with readonly `prev`.
     pub post_processors: Vec<crate::JavaScriptConfig>,
@@ -113,6 +114,7 @@ impl JdbcSamplerConfig {
             variable_names: Vec::new(),
             row_count_variable: None,
             assertions: Vec::new(),
+            timers: Vec::new(),
             pre_processors: Vec::new(),
             post_processors: Vec::new(),
         }

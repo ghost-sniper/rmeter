@@ -11,6 +11,8 @@ use super::{
 
 /// Component configuration tree, compiled into the core's execution-only tree.
 #[derive(Debug, Clone)]
+// Compile-time configuration tree; preserve the existing public Request(config) API.
+#[allow(clippy::large_enum_variant)]
 pub enum HttpNode {
     Request(HttpRequestConfig),
     Defaults(HttpRequestDefaults),

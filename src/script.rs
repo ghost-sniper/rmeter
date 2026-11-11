@@ -5,13 +5,13 @@ use std::{
     time::Duration,
 };
 
-use rmeter_component::JavaScriptConfig;
 use rmeter_component::{
     AssertionConfig as ComponentAssertionConfig, ComponentCompiler, ComponentNode,
     ComponentSampler, HttpBody, HttpMethod, HttpRequestConfig, HttpRequestDefaults,
     JdbcConnectionConfig, JdbcQueryType, JdbcSamplerConfig, JsonAssertionConfig, JsonMatcher,
     MatchSelection, RegexAssertionConfig, Setting, XmlAssertionConfig, XmlMatcher,
 };
+use rmeter_component::{JavaScriptConfig, TimerConfig, TimerValue};
 use rmeter_core::{
     controller::{CompareOperator, Condition, Operand, WhileCondition},
     engine::EngineError,
@@ -66,7 +66,7 @@ pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptEr
         .map_err(ScriptError::Json)?;
     if !take_enabled(&mut value).map_err(ScriptError::Invalid)? {
         let object = value.as_object_mut().unwrap();
-        for key in ["defaults", "variables", "jdbc_connections"] {
+        for key in ["defaults", "variables", "jdbc_connections", "timers"] {
             object.remove(key);
         }
         object.insert("groups".into(), Value::Array(Vec::new()));
@@ -81,6 +81,11 @@ pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptEr
     require_name(&script.name, "plan")?;
     let defaults = script.defaults.into_config();
     let mut compiler = ComponentCompiler::new();
+    for timer in script.timers.into_iter().filter_map(|v| v.0) {
+        compiler
+            .register_timer(timer)
+            .map_err(|e| ScriptError::Invalid(e.to_string()))?;
+    }
     for connection in script
         .jdbc_connections
         .into_iter()
@@ -181,6 +186,8 @@ struct Script {
     defaults: DefaultsConfig,
     #[serde(default)]
     jdbc_connections: Vec<Enabled<ConnectionConfig>>,
+    #[serde(default)]
+    timers: Vec<Enabled<TimerConfig>>,
     groups: Vec<Enabled<GroupConfig>>,
 }
 
@@ -302,6 +309,8 @@ struct JavaScriptNodeConfig {
     timeout_ms: Option<u64>,
     max_variable_bytes: Option<usize>,
     #[serde(default)]
+    timers: Vec<Enabled<TimerConfig>>,
+    #[serde(default)]
     pre_processors: Vec<Enabled<PostProcessorConfig>>,
     #[serde(default)]
     post_processors: Vec<Enabled<PostProcessorConfig>>,
@@ -316,6 +325,7 @@ impl JavaScriptNodeConfig {
         if let Some(value) = self.max_variable_bytes {
             config.max_variable_bytes = value;
         }
+        config.timers = self.timers.into_iter().filter_map(|v| v.0).collect();
         config.pre_processors = self
             .pre_processors
             .into_iter()
@@ -341,9 +351,12 @@ impl PostProcessorConfig {
     fn into_config(self) -> Result<JavaScriptConfig, ScriptError> {
         match self {
             Self::Javascript(config) => {
-                if !config.pre_processors.is_empty() || !config.post_processors.is_empty() {
+                if !config.pre_processors.is_empty()
+                    || !config.post_processors.is_empty()
+                    || !config.timers.is_empty()
+                {
                     return Err(ScriptError::Invalid(
-                        "processors cannot contain processors".into(),
+                        "processors cannot contain processors or timers".into(),
                     ));
                 }
                 config.into_config()
@@ -384,6 +397,15 @@ impl HttpPostProcessorConfig {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum NodeConfig {
+    ConstantTimer {
+        name: String,
+        delay_ms: TimerValue,
+    },
+    GaussianRandomTimer {
+        name: String,
+        deviation_ms: TimerValue,
+        offset_ms: TimerValue,
+    },
     Javascript(JavaScriptNodeConfig),
     #[serde(alias = "jdbc_connection")]
     JdbcConnectionConfiguration(ConnectionConfig),
@@ -407,6 +429,8 @@ enum NodeConfig {
         #[serde(default)]
         assertions: Vec<Enabled<AssertionConfig>>,
         #[serde(default)]
+        timers: Vec<Enabled<TimerConfig>>,
+        #[serde(default)]
         pre_processors: Vec<Enabled<PostProcessorConfig>>,
         #[serde(default)]
         post_processors: Vec<Enabled<PostProcessorConfig>>,
@@ -423,6 +447,8 @@ enum NodeConfig {
         #[serde(default)]
         assertions: Vec<Enabled<AssertionConfig>>,
         max_assertion_body_bytes: Option<usize>,
+        #[serde(default)]
+        timers: Vec<Enabled<TimerConfig>>,
         #[serde(default)]
         pre_processors: Vec<Enabled<PostProcessorConfig>>,
         #[serde(default)]
@@ -522,6 +548,18 @@ impl NodeConfig {
                 .collect::<Result<Vec<_>, _>>()
         };
         Ok(match self {
+            Self::ConstantTimer { name, delay_ms } => {
+                ComponentNode::Timer(TimerConfig::ConstantTimer { name, delay_ms })
+            }
+            Self::GaussianRandomTimer {
+                name,
+                deviation_ms,
+                offset_ms,
+            } => ComponentNode::Timer(TimerConfig::GaussianRandomTimer {
+                name,
+                deviation_ms,
+                offset_ms,
+            }),
             Self::Javascript(config) => ComponentNode::JavaScript(config.into_config()?),
             Self::JdbcConnectionConfiguration(config) => {
                 ComponentNode::JdbcConnection(config.into_config())
@@ -540,6 +578,7 @@ impl NodeConfig {
                 variable_names,
                 row_count_variable,
                 assertions,
+                timers,
                 pre_processors,
                 post_processors,
             } => {
@@ -565,6 +604,7 @@ impl NodeConfig {
                 request.result_variable = result_variable;
                 request.variable_names = variable_names;
                 request.row_count_variable = row_count_variable;
+                request.timers = timers.into_iter().filter_map(|v| v.0).collect();
                 request.pre_processors = pre_processors
                     .into_iter()
                     .filter_map(|v| v.0)
@@ -590,6 +630,7 @@ impl NodeConfig {
                 body,
                 assertions,
                 max_assertion_body_bytes,
+                timers,
                 pre_processors,
                 post_processors,
                 max_post_processor_body_bytes,
@@ -605,6 +646,7 @@ impl NodeConfig {
                 })?;
                 request.settings = settings.into_config();
                 request.body = body.into_body();
+                request.timers = timers.into_iter().filter_map(|v| v.0).collect();
                 request.pre_processors = pre_processors
                     .into_iter()
                     .filter_map(|v| v.0)

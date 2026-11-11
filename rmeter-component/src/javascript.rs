@@ -35,6 +35,8 @@ pub struct JavaScriptConfig {
     /// Total UTF-8 bytes in variable names and values, including initial variables.
     pub max_variable_bytes: usize,
     #[serde(default)]
+    pub timers: Vec<crate::TimerConfig>,
+    #[serde(default)]
     pub pre_processors: Vec<JavaScriptConfig>,
     #[serde(default)]
     pub post_processors: Vec<JavaScriptConfig>,
@@ -47,6 +49,7 @@ impl JavaScriptConfig {
             script: script.into(),
             timeout: Duration::from_millis(100),
             max_variable_bytes: 1024 * 1024,
+            timers: Vec::new(),
             pre_processors: Vec::new(),
             post_processors: Vec::new(),
         }
@@ -86,6 +89,7 @@ impl JavaScriptSampler {
         if config.max_variable_bytes == 0 {
             return Err(invalid("max_variable_bytes must be positive"));
         }
+        crate::timer::validate(&config.timers).map_err(JavaScriptConfigError)?;
         let pre_processors = crate::post_processor::compile(&config.pre_processors)?;
         let post_processors = crate::post_processor::compile(&config.post_processors)?;
         let config = Arc::new(config);
@@ -180,6 +184,9 @@ impl Sampler for JavaScriptSampler {
         };
         if !crate::post_processor::run_pre(&self.pre_processors, user, &mut pre_result).await {
             pre_result.elapsed = started.elapsed();
+            return Ok(pre_result);
+        }
+        if !crate::timer::run(&self.config.timers, user, &mut pre_result).await {
             return Ok(pre_result);
         }
         let started_at = SystemTime::now();

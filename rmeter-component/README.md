@@ -228,3 +228,7 @@ let nodes = compile_http_nodes(vec![
 示例条件依赖用户变量 `enabled`，并在最后采样失败时退出 While。
 若需要读取 HTTP 响应中的字段作为条件变量，需要另外配置响应提取逻辑。
 控制器接口和完整条件语义见 `rmeter-core/README.md`。
+
+### 定时器
+
+`TimerConfig::{ConstantTimer, GaussianRandomTimer}` 和 `TimerValue::{Number, Expression}` 配置可取消的等待。可加入采样器配置的 `timers`，或使用 `ComponentNode::Timer` 声明作用域定时器；`ComponentCompiler::register_timer` 添加全局定时器。多个延迟在前置处理器之后累加等待，不计入响应耗时、不产生独立采样。高斯计算取正态随机数乘偏差加偏移的绝对值，再截去小数。变量在运行时读取当前用户，非法值会在请求或脚本执行前使父采样失败。

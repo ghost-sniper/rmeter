@@ -133,6 +133,8 @@ pub struct HttpRequestConfig {
     pub settings: HttpRequestDefaults,
     pub body: HttpBody,
     pub assertions: Vec<AssertionConfig>,
+    /// Wait after successful preprocessors, before request expansion and timing.
+    pub timers: Vec<crate::TimerConfig>,
     /// Run before request variable expansion.
     pub pre_processors: Vec<crate::JavaScriptConfig>,
     /// Run after the sampler and before assertions, with readonly `prev`.
@@ -162,6 +164,7 @@ impl HttpRequestConfig {
             settings: HttpRequestDefaults::default(),
             body: HttpBody::Empty,
             assertions: Vec::new(),
+            timers: Vec::new(),
             pre_processors: Vec::new(),
             post_processors: Vec::new(),
             max_post_processor_body_bytes: 8 * 1024 * 1024,
