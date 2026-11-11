@@ -4,7 +4,7 @@ HTTP/HTTPS 采样器、HTTP Request Defaults，以及 JSON、正文正则和 XML
 依赖 `rmeter-core`，可直接交给现有 `Engine` 执行。
 还提供使用 Rust 原生 PostgreSQL 驱动的 JDBC 采样器与命名连接配置组件，
 详见 [JDBC 使用文档](src/jdbc/README.md)。
-还提供 Boa 同步 JavaScript 采样器 `JavaScriptConfig` / `JavaScriptSampler`，
+还提供基于 `rquickjs` 的同步 JavaScript 采样器 `JavaScriptConfig` / `JavaScriptSampler`，
 通过 `vars.get/set/remove` 操作当前用户变量，支持执行限制和失败回滚；
 配置与示例见 [JavaScript 脚本变量](../README.md#javascript-脚本变量)。
 脚本检查和执行依赖单独部署的 `rmeter-js-worker`，构建和库/Tauri 集成方式见

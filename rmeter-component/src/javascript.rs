@@ -32,9 +32,6 @@ pub struct JavaScriptConfig {
     pub name: String,
     pub script: String,
     pub timeout: Duration,
-    pub loop_iteration_limit: u64,
-    pub recursion_limit: usize,
-    pub stack_size_limit: usize,
     /// Total UTF-8 bytes in variable names and values, including initial variables.
     pub max_variable_bytes: usize,
 }
@@ -45,9 +42,6 @@ impl JavaScriptConfig {
             name: name.into(),
             script: script.into(),
             timeout: Duration::from_millis(100),
-            loop_iteration_limit: 100_000,
-            recursion_limit: 128,
-            stack_size_limit: 16_384,
             max_variable_bytes: 1024 * 1024,
         }
     }
@@ -81,13 +75,8 @@ impl JavaScriptSampler {
         if config.timeout.is_zero() || config.timeout > Duration::from_secs(60) {
             return Err(invalid("timeout must be between 1 ns and 60 s"));
         }
-        if config.loop_iteration_limit == 0
-            || config.loop_iteration_limit == u64::MAX
-            || config.recursion_limit == 0
-            || config.stack_size_limit == 0
-            || config.max_variable_bytes == 0
-        {
-            return Err(invalid("execution limits must be positive and finite"));
+        if config.max_variable_bytes == 0 {
+            return Err(invalid("max_variable_bytes must be positive"));
         }
         let config = Arc::new(config);
         process::invoke(

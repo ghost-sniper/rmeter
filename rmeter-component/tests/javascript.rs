@@ -14,11 +14,15 @@ async fn es6_variables_are_isolated_persistent_and_never_interpolated() {
         r#"
         const [n] = [Number(vars.get('count') || '0') + 1];
         const format = v => `${ctx.groupName}-${ctx.userIndex}-${ctx.iteration}-${v}`;
-        vars.set('count', String(n));
-        vars.set('__proto__', format(n));
-        vars.set('unicode', '中文😀');
-        if (vars.get('missing') !== undefined) throw new Error('missing');
+        vars.put('count', String(n));
+        vars.put('__proto__', format(n));
+        vars.put('unicode', '中文😀');
+        vars.put('empty', '');
+        if (vars.get('missing') !== null || vars.contains('missing')) throw new Error('missing');
+        if (!vars.contains('count') || vars.get('count') !== String(n)) throw new Error('put');
+        if (!vars.contains('empty') || vars.get('empty') !== '') throw new Error('empty');
         if (!vars.remove('remove') || vars.remove('missing')) throw new Error('remove');
+        if (vars.contains('remove') || vars.get('remove') !== null) throw new Error('removed');
     "#,
     ))
     .unwrap();
@@ -62,32 +66,14 @@ async fn exceptions_and_invalid_types_rollback_all_changes() {
 }
 
 #[tokio::test]
-async fn loop_recursion_stack_and_variable_limits_fail_without_committing() {
-    for (script, limit) in [
-        ("vars.set('x','new'); while (true) {}", 0),
-        ("vars.set('x','new'); function f(){f()} f();", 1),
-        ("vars.set('x','new'); function f(){f()} f();", 2),
-        (
-            "vars.set('x','new'); vars.set('large', 'x'.repeat(100));",
-            3,
-        ),
-        (
-            "vars.set('x','new'); try { vars.set('large', 'x'.repeat(100)); } catch(e) {}",
-            3,
-        ),
-        // Runtime limit exceptions must not be swallowed by JavaScript catch.
-        (
-            "try { while(true) {} } catch(e) { vars.set('caught','yes'); }",
-            0,
-        ),
+async fn stack_and_variable_limits_fail_without_committing() {
+    for script in [
+        "vars.put('x','new'); function f(){f()} f();",
+        "vars.put('x','new'); vars.put('large', 'x'.repeat(100));",
+        "vars.put('x','new'); try { vars.put('large', 'x'.repeat(100)); } catch(e) {}",
     ] {
         let mut config = config(script);
-        match limit {
-            0 => config.loop_iteration_limit = 20,
-            1 => config.recursion_limit = 16,
-            2 => config.stack_size_limit = 32,
-            _ => config.max_variable_bytes = 32,
-        }
+        config.max_variable_bytes = 32;
         let mut user = UserContext::new("g", 0);
         let result = tokio::time::timeout(
             Duration::from_secs(10),
@@ -103,9 +89,10 @@ async fn loop_recursion_stack_and_variable_limits_fail_without_committing() {
 
 #[tokio::test]
 async fn timeout_stops_vm_and_leaves_async_executor_responsive() {
-    let mut config = config("vars.set('x','new'); while(true) {}");
+    let mut config = config(
+        "vars.put('x','new'); try { while(true) {} } catch(e) { vars.put('caught','yes'); }",
+    );
     config.timeout = Duration::from_millis(30);
-    config.loop_iteration_limit = u64::MAX - 1;
     let sampler = JavaScriptSampler::new(config).unwrap();
     let mut user = UserContext::new("g", 0);
     let (sample, ()) = tokio::join!(sampler.sample(&mut user), async {
@@ -173,15 +160,14 @@ async fn variable_quota_counts_utf8_and_allows_replacing_and_removing_values() {
 
 #[test]
 fn syntax_and_invalid_limits_are_rejected_before_execution() {
-    assert!(JavaScriptSampler::new(config("const = ;")).is_err());
-    for limit in 0..6 {
+    let error = JavaScriptSampler::new(config("const = ;")).unwrap_err();
+    assert!(error.to_string().contains("script.js:1"), "{error}");
+    JavaScriptSampler::new(config("throw new Error('do not execute during check');")).unwrap();
+    for limit in 0..3 {
         let mut config = config("");
         match limit {
             0 => config.timeout = Duration::ZERO,
-            1 => config.loop_iteration_limit = u64::MAX,
-            2 => config.recursion_limit = 0,
-            3 => config.stack_size_limit = 0,
-            4 => config.max_variable_bytes = 0,
+            1 => config.max_variable_bytes = 0,
             _ => config.timeout = Duration::from_secs(61),
         }
         assert!(JavaScriptSampler::new(config).is_err());

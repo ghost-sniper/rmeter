@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "Boa JavaScript variables",
+  "name": "ES6 JavaScript variables",
   "variables": { "count": "0" },
   "groups": [{
     "name": "users",
@@ -11,11 +11,8 @@
       "type": "javascript",
       "name": "Generate request variables",
       "timeout_ms": 100,
-      "loop_iteration_limit": 100000,
-      "recursion_limit": 128,
-      "stack_size_limit": 16384,
       "max_variable_bytes": 1048576,
-      "script": "const n = Number(vars.get('count')) + 1; vars.set('count', String(n)); vars.set('requestId', `user-${ctx.userIndex}-${n}`); vars.set('payload', JSON.stringify({id: vars.get('requestId'), iteration: ctx.iteration}));"
+      "script": "const n = Number(vars.get('count')) + 1; vars.put('count', String(n)); vars.put('requestId', `user-${ctx.userIndex}-${n}`); vars.put('payload', JSON.stringify({id: vars.get('requestId'), iteration: ctx.iteration}));"
     }]
   }]
 }

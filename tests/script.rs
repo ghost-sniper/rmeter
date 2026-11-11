@@ -429,6 +429,7 @@ async fn aborting_library_run_cancels_in_flight_http_and_closes_events() {
 fn shipped_example_compiles_without_network_requests() {
     parse_script(include_str!("../examples/post_processors.json")).unwrap();
     parse_script(include_str!("../examples/javascript.json")).unwrap();
+    parse_script(include_str!("../examples/javascript_pipeline.json")).unwrap();
     parse_script(include_str!("../examples/http.json")).unwrap();
     parse_script(include_str!("../examples/assertions.json")).unwrap();
     parse_script(include_str!("../examples/jdbc_postgresql.json")).unwrap();
@@ -536,7 +537,7 @@ async fn failed_post_processors_apply_parent_error_policies_and_update_controlle
                     {"type":"javascript","name":"broken","timeout_ms":5000,"script":"vars.set('partial','bad'); throw new Error('expected');"}
                 ]},
                 {"type":"if","name":"failure state","condition":{"type":"not","condition":{"type":"last_sample_ok"}},"children":[
-                    {"type":"javascript","name":"check rollback","timeout_ms":5000,"script":"if (vars.get('partial') !== undefined) throw new Error('partial commit');"}
+                    {"type":"javascript","name":"check rollback","timeout_ms":5000,"script":"if (vars.contains('partial')) throw new Error('partial commit');"}
                 ]}
             ]
         }]}).to_string();
@@ -580,7 +581,6 @@ async fn group_deadline_cancels_in_flight_post_processor_before_parent_event() {
         "name":"g","max_duration_ms":200,"children":[{
             "type":"http_request","name":"HTTP","url":url,"post_processors":[{
                 "type":"javascript","name":"endless","timeout_ms":60000,
-                "loop_iteration_limit":18446744073709551614u64,
                 "script":"vars.set('partial','bad'); while(true) {}"
             }]
         }]
@@ -631,9 +631,11 @@ async fn javascript_variables_reach_http_and_remain_isolated_across_users_and_it
     let source = json!({"version":1,"name":"JS HTTP","variables":{"count":"0"},"groups":[{
         "name":"g","users":2,"iterations":2,"children":[
             {"type":"javascript","name":"compute","timeout_ms":5000,"script":
-                "const n = Number(vars.get('count')) + 1; vars.set('count', String(n)); vars.set('payload', `${ctx.userIndex}:${ctx.iteration}:${n}`);"},
-            {"type":"http_request","name":"HTTP","method":"POST","url":url,
-                "body":{"type":"text","value":"${payload}"}}
+                "const n = Number(vars.get('count')) + 1; vars.put('count', String(n)); vars.put('payload', `${ctx.userIndex}:${ctx.iteration}:${n}`); vars.put('send', 'true');"},
+            {"type":"if","name":"JS flag","condition":"${send}","children":[
+                {"type":"http_request","name":"HTTP","method":"POST","url":url,
+                    "body":{"type":"text","value":"${payload}"}}
+            ]}
         ]
     }]}).to_string();
     let (sender, mut receiver) = mpsc::channel(1);
@@ -679,7 +681,7 @@ async fn javascript_failures_follow_all_error_policies() {
                     "script":"vars.set('partial', 'bad'); throw new Error('expected failure');"},
                 {"type":"if","name":"failure state","condition":{"type":"not","condition":{"type":"last_sample_ok"}},"children":[
                     {"type":"javascript","name":"after","timeout_ms":5000,
-                        "script":"if (vars.get('partial') !== undefined) throw new Error('partial write');"}
+                        "script":"if (vars.contains('partial')) throw new Error('partial write');"}
                 ]}
             ]
         }]}).to_string();

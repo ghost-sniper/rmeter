@@ -8,34 +8,39 @@ HTTP/JDBC 组件编译、运行入口和可序列化事件。`rmeter-core` 负�
 
 ## JavaScript 脚本变量
 
-支持 Boa 执行同步 JavaScript（包含 ES6 语法），在 `children` 中添加节点：
+使用 `rquickjs` 执行同步 JavaScript，支持 ES6（ECMAScript 2015）语法。
+引擎也接受其支持的较新语法。在 `children` 中添加节点：
 
 ```json
 {
   "type": "javascript",
   "name": "生成变量",
   "timeout_ms": 100,
-  "script": "const n = Number(vars.get('count') || '0') + 1; vars.set('count', String(n)); vars.set('requestId', `user-${ctx.userIndex}-${n}`);"
+  "script": "const n = Number(vars.get('count') || '0') + 1; vars.put('count', String(n)); vars.put('requestId', `user-${ctx.userIndex}-${n}`);"
 }
 ```
 
 后续 HTTP/JDBC 请求可以使用 `${requestId}`、`${count}` 等现有变量替换。
-完整可运行示例见 [javascript.json](examples/javascript.json)，该示例不访问网络。
+无需网络的变量示例见 [javascript.json](examples/javascript.json)；同时验证 HTTP、JDBC、
+IF 和 While 的步骤见 [JavaScript 变量联动示例](examples/javascript_pipeline.md)。
 `--check` 会检查 JavaScript 语法和限制配置，但不会执行脚本。
 
 脚本 API：
 
 | API | 行为 |
 | --- | --- |
-| `vars.get(name)` | 读取字符串变量；不存在时返回 `undefined` |
-| `vars.set(name, value)` | 设置字符串变量；名称和值均须为字符串，数字使用 `String(value)`，对象使用 `JSON.stringify(value)` |
+| `vars.get(name)` | 读取字符串变量；不存在时返回 `null` |
+| `vars.put(name, value)` | 新增或覆盖字符串变量；名称和值均须为字符串，数字使用 `String(value)`，对象使用 `JSON.stringify(value)` |
 | `vars.remove(name)` | 删除变量；返回是否存在该变量 |
+| `vars.contains(name)` | 判断变量是否存在；空字符串也算存在 |
 | `ctx.groupName` / `ctx.userIndex` / `ctx.iteration` / `ctx.lastSampleOk` | 只读执行信息，用户和迭代索引从 0 开始 |
 
 变量按虚拟用户隔离，在该用户后续节点和迭代间保留。每次执行使用新的
 JavaScript 上下文，JS 全局变量不保留；只有脚本成功后才提交 `vars` 的修改，
 抛异常、超过限制或取消时不提交。源码不会进行 `${...}` 替换，ES6 模板字符串可直接使用。
 不运行 Promise 后续任务，不提供 Node.js、浏览器或异步 I/O API。
+旧脚本的 `vars.set` 仍可使用；将 `vars.get(name) === undefined` 改为
+`!vars.contains(name)` 或 `vars.get(name) === null`。
 
 JavaScript 节点产生一条采样事件，参与采样数、成功率和耗时统计，更新
 `last_sample_ok`，失败遵循线程组 `on_error` 策略。事件保留节点名称；
@@ -45,14 +50,13 @@ JavaScript 节点产生一条采样事件，参与采样数、成功率和耗时
 | 限制字段 | 默认值 | 含义 |
 | --- | --- | --- |
 | `timeout_ms` | 100 | 执行超时，允许 1–60000 毫秒 |
-| `loop_iteration_limit` | 100000 | Boa 单个循环的迭代上限，不能设为 0 或 `u64::MAX` |
-| `recursion_limit` | 128 | Boa 调用递归上限 |
-| `stack_size_limit` | 16384 | Boa VM 栈元素上限，不是字节数 |
 | `max_variable_bytes` | 1048576 | 所有变量名和值的 UTF-8 字节总量，包含初始变量 |
 
-其余限制值也必须大于 0，脚本源码最大 1 MiB。语法检查、编译和运行均在独立的
+变量上限必须大于 0，脚本源码最大 1 MiB。请从旧脚本移除 `loop_iteration_limit`、
+`recursion_limit`、`stack_size_limit`。QuickJS 的堆内存和原生栈上限分别为 64 MiB 和 256 KiB；
+引擎通过中断回调检查执行超时。语法检查、编译和运行均在独立的
 `rmeter-js-worker` 进程中执行，每次检查或执行使用新进程。父进程监督超时和取消，
-即使 Boa 卡在内建正则操作中，也会强制终止并回收子进程；worker 栈溢出或内存耗尽
+如果引擎未及时退出，父进程会强制终止并回收子进程；worker 栈溢出或内存耗尽
 只使本次检查/采样失败。超时或异常返回不提交变量，不回退到主进程执行。
 
 每个宿主进程最多同时运行 4 个 worker，排队及启动阶段分别最多等待 5 秒。
@@ -83,7 +87,7 @@ Cargo 开发目录还支持从当前测试程序所在的 `target/debug` 或 `ta
 
 ## HTTP / JDBC 后置处理器
 
-在 `http_request` 或 `jdbc_request` 节点中配置 `post_processors`，可用 Boa
+在 `http_request` 或 `jdbc_request` 节点中配置 `post_processors`，可用 JavaScript
 读取当前采样器返回结果，并将提取值写入用户变量供后续请求使用：
 
 ```json
@@ -98,7 +102,7 @@ Cargo 开发目录还支持从当前测试程序所在的 `target/debug` 或 `ta
       "type": "javascript",
       "name": "提取 token",
       "timeout_ms": 100,
-      "script": "if (!prev.success || prev.body === null) throw new Error(prev.bodyUnavailableReason || 'login failed'); vars.set('token', JSON.parse(prev.body).token);"
+      "script": "if (!prev.success || prev.body === null) throw new Error(prev.bodyUnavailableReason || 'login failed'); vars.put('token', JSON.parse(prev.body).token);"
     }
   ]
 }
@@ -124,7 +128,7 @@ Cargo 开发目录还支持从当前测试程序所在的 `target/debug` 或 `ta
 `prev` 仅在后置处理器中存在，不保存在用户上下文，不会泄漏到下一次采样或独立
 JavaScript 节点。`ctx.lastSampleOk` 仍表示引擎记录的上一次采样状态；
 后置处理器应使用 `prev.success` 判断当前采样。完整返回体不自动写入 `vars`，
-因此不占变量字节配额；通过 `vars.set` 保存的内容仍受配额限制。
+因此不占变量字节配额；通过 `vars.put` 保存的内容仍受配额限制。
 
 JDBC 的 `prev.body` 是现有查询结果 JSON，包含 `columns`、`rows`、
 `row_count` 和 `rows_affected`；每行数据按列顺序排列。例如：
@@ -134,7 +138,7 @@ if (!prev.success || prev.body === null) throw new Error("查询失败");
 const data = JSON.parse(prev.body);
 const index = data.columns.indexOf("id");
 if (index < 0 || data.rows.length === 0) throw new Error("查询未返回 id");
-vars.set("userId", String(data.rows[0][index]));
+vars.put("userId", String(data.rows[0][index]));
 ```
 
 HTTP 仅在存在后置处理器时额外收集完整输入，`max_post_processor_body_bytes`

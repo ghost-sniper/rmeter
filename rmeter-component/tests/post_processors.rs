@@ -223,7 +223,6 @@ async fn post_processor_timeout_rolls_back_and_keeps_http_result() {
     let mut config = HttpRequestConfig::with_url("timeout", url);
     let mut script = processor("endless", "vars.set('partial','bad'); while(true) {}");
     script.timeout = Duration::from_millis(30);
-    script.loop_iteration_limit = u64::MAX - 1;
     config.post_processors.push(script);
     let mut user = UserContext::new("g", 0);
     let result = HttpSampler::new(config)
@@ -250,7 +249,7 @@ async fn jdbc_failure_runs_post_processors_after_clearing_stale_result_variables
         "failure handler",
         r#"
         if (prev.success || prev.body !== null || prev.responseCode !== 'INVALID_CONFIG'
-            || !prev.bodyUnavailableReason || vars.get('result') !== undefined) throw new Error('stale JDBC result');
+            || !prev.bodyUnavailableReason || vars.contains('result')) throw new Error('stale JDBC result');
         vars.set('handled', 'yes');
     "#,
     )];

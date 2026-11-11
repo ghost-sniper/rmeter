@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) const READY: &[u8] = b"RMETER_JS_WORKER_V1\n";
+pub(super) const READY: &[u8] = b"RMETER_JS_WORKER_V2\n";
 pub(super) const MAX_IPC_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKERS: usize = 4;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);

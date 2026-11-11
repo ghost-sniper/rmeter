@@ -22,8 +22,8 @@ futures-util = "0.3"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 uuid = "1"
-boa_engine = { version = "0.22", default-features = false }
 serde = { workspace = true, features = ["rc"] }
+rquickjs = "0.14"
 
 [[bin]]
 name = "rmeter-js-worker"

@@ -263,9 +263,6 @@ struct JavaScriptNodeConfig {
     name: String,
     script: String,
     timeout_ms: Option<u64>,
-    loop_iteration_limit: Option<u64>,
-    recursion_limit: Option<usize>,
-    stack_size_limit: Option<usize>,
     max_variable_bytes: Option<usize>,
 }
 impl JavaScriptNodeConfig {
@@ -274,15 +271,6 @@ impl JavaScriptNodeConfig {
         let mut config = JavaScriptConfig::new(self.name, self.script);
         if let Some(value) = self.timeout_ms {
             config.timeout = Duration::from_millis(value);
-        }
-        if let Some(value) = self.loop_iteration_limit {
-            config.loop_iteration_limit = value;
-        }
-        if let Some(value) = self.recursion_limit {
-            config.recursion_limit = value;
-        }
-        if let Some(value) = self.stack_size_limit {
-            config.stack_size_limit = value;
         }
         if let Some(value) = self.max_variable_bytes {
             config.max_variable_bytes = value;

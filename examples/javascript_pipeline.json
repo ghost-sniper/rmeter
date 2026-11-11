@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "name": "JavaScript → IF/HTTP → While/JDBC",
+  "variables": {
+    "base_url": "http://127.0.0.1:8080",
+    "db_url": "postgresql://postgres@127.0.0.1:5432/postgres?sslmode=disable",
+    "count": "0",
+    "temporary": "initial"
+  },
+  "jdbc_connections": [{
+    "name": "PostgreSQL",
+    "variable_name": "pg",
+    "url": "${db_url}"
+  }],
+  "groups": [{
+    "name": "JavaScript users",
+    "users": 2,
+    "iterations": 2,
+    "on_error": "stop_test",
+    "children": [
+      {
+        "type": "javascript",
+        "name": "Prepare variables",
+        "timeout_ms": 1000,
+        "script": "const [n] = [Number(vars.get('count')) + 1]; const requestId = i => `user-${i}-${n}`; if (vars.contains('temporary')) vars.remove('temporary'); vars.put('count', String(n)); vars.put('requestId', requestId(ctx.userIndex)); vars.put('httpEnabled', String(!vars.contains('temporary'))); vars.put('skip', 'false'); vars.put('queryCount', '1');"
+      },
+      {
+        "type": "if",
+        "name": "Read HTTP flag from JavaScript",
+        "condition": "${httpEnabled}",
+        "children": [{
+          "type": "http_request",
+          "name": "HTTP ${requestId}",
+          "url": "${base_url}/poll",
+          "settings": { "query": [["index", "${requestId}"]] },
+          "assertions": [
+            { "type": "json", "name": "HTTP received a generated request ID", "path": "$.data.index", "matcher": { "type": "regex", "pattern": "^user-[01]-[12]$" } }
+          ]
+        }]
+      },
+      {
+        "type": "if",
+        "name": "Skip this branch using JavaScript",
+        "condition": "${skip}",
+        "children": [{
+          "type": "http_request",
+          "name": "Must not run",
+          "url": "${base_url}/must-not-run"
+        }]
+      },
+      {
+        "type": "while",
+        "name": "query",
+        "condition": {
+          "type": "compare",
+          "left": { "type": "variable", "name": "__jm__query__idx" },
+          "operator": "less",
+          "right": { "type": "variable", "name": "queryCount" }
+        },
+        "children": [{
+          "type": "jdbc_request",
+          "name": "JDBC ${requestId}",
+          "connection": "pg",
+          "sql": "SELECT $1::integer AS sequence, $2::text AS request_id",
+          "parameters": ["${count}", "${requestId}"],
+          "assertions": [
+            { "type": "json", "name": "JDBC returned one row", "path": "$.row_count", "matcher": { "type": "equals", "expected": 1 } },
+            { "type": "json", "name": "JDBC received a generated request ID", "path": "$.rows[0][1]", "matcher": { "type": "regex", "pattern": "^user-[01]-[12]$" } }
+          ]
+        }]
+      }
+    ]
+  }]
+}
