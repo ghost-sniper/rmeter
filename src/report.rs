@@ -24,6 +24,8 @@ pub enum ReportEvent {
         bytes_received: u64,
         response_body: Option<Vec<u8>>,
         assertions: Vec<AssertionReport>,
+        #[serde(default)]
+        script_logs: Box<rmeter_core::context::ScriptLogs>,
     },
     Finished {
         at_ms: u64,
@@ -57,6 +59,7 @@ impl From<RunEvent> for ReportEvent {
                     bytes_sent: result.bytes_sent,
                     bytes_received: result.bytes_received,
                     response_body: result.response_body,
+                    script_logs: Box::new(event.script_logs),
                     assertions: result
                         .assertions
                         .into_iter()

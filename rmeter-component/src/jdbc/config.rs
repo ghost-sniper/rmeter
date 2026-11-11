@@ -88,7 +88,8 @@ pub struct JdbcSamplerConfig {
     pub variable_names: Vec<String>,
     pub row_count_variable: Option<String>,
     pub assertions: Vec<AssertionConfig>,
-    /// Run after assertions, with the complete result JSON even if report saving is off.
+    /// Run before assertions, with the complete result JSON even if report saving is off.
+    pub pre_processors: Vec<crate::JavaScriptConfig>,
     pub post_processors: Vec<crate::JavaScriptConfig>,
 }
 impl JdbcSamplerConfig {
@@ -111,6 +112,7 @@ impl JdbcSamplerConfig {
             variable_names: Vec::new(),
             row_count_variable: None,
             assertions: Vec::new(),
+            pre_processors: Vec::new(),
             post_processors: Vec::new(),
         }
     }

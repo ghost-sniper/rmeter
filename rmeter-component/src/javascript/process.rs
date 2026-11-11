@@ -1,4 +1,4 @@
-use super::{ExecutionResult, Request, Response, resource};
+use super::{Request, Response, resource};
 use std::{
     io::{self, Read, Write},
     path::PathBuf,
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) const READY: &[u8] = b"RMETER_JS_WORKER_V2\n";
+pub(super) const READY: &[u8] = b"RMETER_JS_WORKER_V3\n";
 pub(super) const MAX_IPC_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKERS: usize = 4;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -129,7 +129,10 @@ fn worker_path() -> io::Result<PathBuf> {
     path.canonicalize()
 }
 
-pub(super) fn invoke(request: Request, cancel: &AtomicBool) -> ExecutionResult {
+pub(super) fn invoke(
+    request: Request,
+    cancel: &AtomicBool,
+) -> Result<Response, (&'static str, String)> {
     let _slot = Slot::acquire(cancel)?;
     let timeout = if request.check_only {
         CHECK_TIMEOUT
@@ -234,25 +237,17 @@ pub(super) fn invoke(request: Request, cancel: &AtomicBool) -> ExecutionResult {
                 None => output_rx.try_recv().map_err(internal)?.map_err(internal)?,
             };
             let response: Response = serde_json::from_slice(&bytes).map_err(internal)?;
-            if let Some((code, message)) = response.error {
-                let code = match code.as_str() {
-                    "JavaScriptError" => "JavaScriptError",
-                    "Timeout" => "Timeout",
-                    _ => "Internal",
-                };
-                return Err((code, message));
-            }
-            let variables = response
+            let size: usize = response
                 .variables
-                .ok_or_else(|| ("Internal", "worker response missing variables".into()))?;
-            let size: usize = variables.iter().map(|(k, v)| k.len() + v.len()).sum();
+                .as_ref()
+                .map_or(0, |vars| vars.iter().map(|(k, v)| k.len() + v.len()).sum());
             if size > variable_limit {
                 return Err((
                     "JavaScriptError",
                     "worker variables exceed max_variable_bytes".into(),
                 ));
             }
-            return Ok(variables);
+            return Ok(response);
         }
         // A failed IPC operation must also terminate a still-running child.
         if output.is_none() {

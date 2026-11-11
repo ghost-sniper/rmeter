@@ -96,14 +96,14 @@ async fn http_processors_receive_complete_readonly_results_and_commit_in_order()
 }
 
 #[tokio::test]
-async fn processors_see_assertion_failure_and_cannot_restore_parent_success() {
+async fn processors_run_before_assertions_and_cannot_restore_parent_success() {
     let (url, server) = http_response(response(br#"{"code":1}"#)).await;
     let mut config = HttpRequestConfig::with_url("asserted", url);
     config.add_assertion(JsonAssertionConfig::equals("code", "$.code", json!(0)));
     config.post_processors = vec![processor(
         "inspect failure",
         r#"
-        if (prev.success !== false) throw new Error('assertions did not run first');
+        if (prev.success !== true) throw new Error('assertions ran too early');
         if (JSON.parse(prev.body).code !== 1) throw new Error('body');
         prev.success = true;
         vars.set('inspected', 'yes');
@@ -269,7 +269,12 @@ async fn jdbc_failure_runs_post_processors_after_clearing_stale_result_variables
 async fn jdbc_complete_result_is_available_without_report_body_storage() {
     let url = std::env::var("RMETER_POSTGRES_URL").expect("set RMETER_POSTGRES_URL");
     let connection = Arc::new(JdbcConnection::new(JdbcConnectionConfig::new("db", url)).unwrap());
-    let mut config = JdbcSamplerConfig::new("SQL", "db", "SELECT 42::integer AS id");
+    let mut config = JdbcSamplerConfig::new("SQL", "db", "SELECT $1::integer AS id");
+    config.parameters = vec![json!("${id}")];
+    config.pre_processors = vec![processor(
+        "prepare id",
+        "vars.put('id','42'); log.info('prepared {}', vars.get('id'));",
+    )];
     config.save_response_body = false;
     config.post_processors = vec![processor(
         "extract id",
@@ -288,4 +293,122 @@ async fn jdbc_complete_result_is_available_without_report_body_storage() {
     assert!(result.success, "{:?}", result.response_message);
     assert_eq!(user.variables["userId"], "42");
     assert!(result.response_body.is_none());
+}
+
+#[tokio::test]
+async fn pre_processors_supply_http_variables_and_logs_survive_script_errors() {
+    let (url, server) = http_response(response(b"ok")).await;
+    let mut config = HttpRequestConfig::with_url("request", "${target}");
+    config.pre_processors = vec![
+        processor(
+            "prepare",
+            &format!(
+                "vars.put('target', {}); log.info('user {{}}', ctx.getThreadNum());",
+                json!(url)
+            ),
+        ),
+        processor(
+            "check",
+            "if (ctx.getVariables().get('target') === null || vars.getIteration() !== 1 || sampler.getName() !== 'request' || Label !== 'check') throw new Error('bindings'); log.debug('ready');",
+        ),
+    ];
+    config.post_processors = vec![processor(
+        "extract",
+        "if (prev.getResponseDataAsString() !== 'ok' || !prev.isSuccessful() || prev.getResponseCode() !== '200') throw new Error('prev'); log.warn('received {}', prev.getSampleLabel());",
+    )];
+    let mut user = UserContext::new("g", 2);
+    let result = HttpSampler::new(config)
+        .unwrap()
+        .sample(&mut user)
+        .await
+        .unwrap();
+    assert!(result.success, "{:?}", result.response_message);
+    assert_eq!(
+        user.script_logs
+            .entries
+            .iter()
+            .map(|l| l.message.as_str())
+            .collect::<Vec<_>>(),
+        ["user 2", "ready", "received request"]
+    );
+    server.await.unwrap();
+
+    let mut config = HttpRequestConfig::with_url("never sent", "http://127.0.0.1:1/");
+    config.pre_processors = vec![
+        processor(
+            "broken",
+            "log.error('before exception'); vars.put('partial', 'bad'); throw new Error('prepare failed');",
+        ),
+        processor("skip", "vars.put('ran','bad');"),
+    ];
+    config.post_processors = vec![processor("skip post", "vars.put('post','bad');")];
+    let mut user = UserContext::new("g", 0);
+    let result = HttpSampler::new(config)
+        .unwrap()
+        .sample(&mut user)
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert_eq!(result.bytes_sent, 0);
+    assert!(result.response_message.unwrap().contains("broken"));
+    assert!(user.variables.is_empty());
+    assert_eq!(user.script_logs.entries[0].message, "before exception");
+}
+
+#[tokio::test]
+async fn javascript_pre_main_post_share_variables_and_bound_logs() {
+    let mut config = processor(
+        "JS",
+        "if (vars.get('phase') !== 'pre') throw new Error('order'); vars.put('phase','sample'); log.info('sample');",
+    );
+    config.pre_processors.push(processor(
+        "pre",
+        "vars.put('phase','pre'); log.info('pre');",
+    ));
+    config.post_processors.push(processor("post", "if (vars.get('phase') !== 'sample' || !prev.isSuccessful() || prev.body !== null || prev.label !== 'JS') throw new Error('order'); vars.put('phase','post'); log.info('post'); for(let i=0;i<200;i++) log.debug('x'.repeat(4096));"));
+    let mut user = UserContext::new("g", 0);
+    let result = JavaScriptSampler::new(config)
+        .unwrap()
+        .sample(&mut user)
+        .await
+        .unwrap();
+    assert!(result.success, "{:?}", result.response_message);
+    assert_eq!(user.variables["phase"], "post");
+    assert!(user.script_logs.truncated);
+    assert!(user.script_logs.entries.len() <= 100);
+    assert!(
+        user.script_logs
+            .entries
+            .iter()
+            .map(|l| l.message.len() + l.source.len() + l.level.len())
+            .sum::<usize>()
+            <= 65536
+    );
+    assert_eq!(
+        user.script_logs.entries[..3]
+            .iter()
+            .map(|l| l.message.as_str())
+            .collect::<Vec<_>>(),
+        ["pre", "sample", "post"]
+    );
+}
+
+#[tokio::test]
+async fn pre_processor_timeout_skips_parent_and_rolls_back_variables() {
+    let mut config = processor("skip main", "vars.put('main','bad');");
+    let mut pre = processor("timeout pre", "vars.put('partial','bad'); while(true){}");
+    pre.timeout = Duration::from_millis(30);
+    config.pre_processors.push(pre);
+    config
+        .post_processors
+        .push(processor("skip post", "vars.put('post','bad');"));
+    let mut user = UserContext::new("g", 0);
+    let result = JavaScriptSampler::new(config)
+        .unwrap()
+        .sample(&mut user)
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert_eq!(result.response_code.as_deref(), Some("Timeout"));
+    assert!(user.variables.is_empty());
 }

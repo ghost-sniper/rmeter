@@ -85,9 +85,9 @@ worker 路径由宿主配置，测试计划不能覆盖；不从 PATH 或当前�
 Cargo 开发目录还支持从当前测试程序所在的 `target/debug` 或 `target/release` 找到 worker。
 缺少 worker、协议不匹配或启动失败会返回错误，HTTP/JDBC 不含脚本时无需 worker。
 
-## HTTP / JDBC 后置处理器
+## JavaScript 前置与后置处理器
 
-在 `http_request` 或 `jdbc_request` 节点中配置 `post_processors`，可用 JavaScript
+在 `http_request`、`jdbc_request` 或 `javascript` 节点中配置 `post_processors`，可用 JavaScript
 读取当前采样器返回结果，并将提取值写入用户变量供后续请求使用：
 
 ```json
@@ -113,12 +113,12 @@ Cargo 开发目录还支持从当前测试程序所在的 `target/debug` 或 `ta
 运行前需准备登录接口和 PostgreSQL；`--check` 不连接这些服务，也不执行处理器。
 
 后置脚本支持与独立 JavaScript 节点相同的执行限制、`vars` 和 `ctx` API。
-另外注入只读 `prev`，它是所属采样器在断言检查后的结果快照：
+另外注入只读 `prev`，它是所属采样器在断言检查前的结果快照：
 
 | 属性 | 含义 |
 | --- | --- |
 | `prev.label` | 当前采样名称，已展开变量 |
-| `prev.success` | 当前传输/查询和断言是否成功 |
+| `prev.success` | 当前传输/查询/脚本是否成功（尚未执行断言） |
 | `prev.responseCode` | HTTP 状态码或 JDBC 返回码；不可用时为 `null` |
 | `prev.responseMessage` | 返回说明或错误信息；不可用时为 `null` |
 | `prev.elapsedMs` | 采样耗时，单位毫秒，不包含后置处理时间 |
@@ -149,7 +149,7 @@ HTTP 输入超限、读取不完整或不是有效 UTF-8 时，提供 `body: nul
 响应仍会继续消费，以保持连接复用和字节统计。JDBC 复用受 `max_result_bytes`
 限制的完整查询结果，不受报告响应体保存开关影响。
 
-执行顺序为：请求/查询 → 断言 → 按数组顺序执行后置处理器 → 发送父采样事件
+执行顺序为：按数组顺序执行前置处理器 → 请求/查询/脚本 → 按数组顺序执行后置处理器 → 断言 → 发送父采样事件
 并应用 `on_error`。失败的请求也执行后置处理器，但取消正在执行的采样会中止处理链。
 每个处理器单独提交变量；失败或超限时回滚该处理器修改、保留之前成功处理器的
 修改，并跳过剩余处理器。父采样标记为失败，保留原返回码、响应体和字节统计，
@@ -157,7 +157,7 @@ HTTP 输入超限、读取不完整或不是有效 UTF-8 时，提供 `body: nul
 变量回滚不回滚已经执行的数据库操作。
 
 后置处理器不产生额外采样事件，不增加请求采样数；父采样的 `elapsed` 保留请求/
-查询耗时。处理器运行完成后，引擎再根据最终结果更新 `last_sample_ok`，因此
+查询/主脚本耗时，不包含前后置处理时间（前置失败时记录失败前置耗时）。处理器运行完成后，引擎再根据最终结果更新 `last_sample_ok`，因此
 后续 IF/While 和线程组错误策略可以观察到处理器失败。
 
 ## 选择编译目标
@@ -297,7 +297,7 @@ result?;
 | `if` | `name`、`condition`、`children`；可选 `evaluate_all`，默认 false |
 | `while` | `name`、`condition`、`children` |
 
-测试计划、线程组、所有子节点、全局 JDBC 配置、断言与后置处理器支持可选的
+测试计划、线程组、所有子节点、全局 JDBC 配置、断言与前/后置处理器支持可选的
 `"enabled": false`；缺省或 `true` 为启用，仅接受布尔值。禁用项在编译执行计划前
 被过滤，不校验其执行配置、不初始化 worker/连接池、不产生采样或断言结果。
 禁用控制器/线程组会跳过整个子树，禁用配置不参与继承；启用的 JDBC 采样器如果
@@ -418,3 +418,17 @@ cargo test --workspace
 cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+
+### 前置处理器与日志 API
+
+三个采样器的 `pre_processors` 与 `post_processors` 均为数组，元素格式相同：
+`{"type":"javascript","name":"准备参数","script":"vars.put('id','42'); log.info('准备完成');","timeout_ms":1000}`。
+可设置 `enabled:false`，处理器不允许再挂载子处理器。前置在模板展开前运行，成功写入的变量立即供本次采样器使用；前置失败跳过采样器、后置与断言，将父采样标为失败并应用线程组错误策略。每个处理器成功后提交其变量，失败回滚自身变量，同阶段余下处理器不再执行。取消会回收执行中的 worker。
+
+前后置以及独立 JavaScript 采样器均提供 `vars.get/put/set/remove/contains/getIteration`（字符串变量，getIteration 从 1 开始）、`ctx.groupName/userIndex/iteration/lastSampleOk`、`ctx.getThreadNum()`、`ctx.getVariables()`、只读 `sampler.name/getName()` 和处理器/采样器名称 `Label`。`ctx.iteration`、`userIndex` 从 0 开始。
+`log.trace/debug/info/warn/error(message, ...args)` 支持 `{}` 占位符，`log.isDebugEnabled/isInfoEnabled()` 返回 true。日志随父采样的 `script_logs.entries` 输出，带 level/source/message；单条最多 4096 UTF-8 字节，每次采样累计最多 100 条、64 KiB，超限设置 `script_logs.truncated`。脚本异常仍返回已收集日志；worker 被外部取消或硬超时终止时，未返回的日志丢弃。日志不增加采样数，也不写入变量。
+
+后置的只读 `prev` 新增 `getResponseDataAsString/getResponseCode/getResponseMessage/getSampleLabel/getTime/isSuccessful` 方法，对应已有字段。前置及独立采样器不提供 `prev`；JavaScript 采样器的后置提供本次执行状态，但无响应体（body 为 null）。这些 API 参考 JMeter 的 JSR223 使用方式，不提供 Java 对象、props、文件或网络 I/O。
+
+兼容变化：后置改在断言之前执行，因此 prev.success 只反映采样器状态；失败断言仍使最终采样失败。采样事件 RunEvent::SampleCompleted 的载荷改为 Box<SampleEvent>，包含有界日志；JSON 报告结构仅新增 script_logs。

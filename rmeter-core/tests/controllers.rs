@@ -477,7 +477,7 @@ fn samples(events: &[RunEvent]) -> Vec<&SampleEvent> {
     events
         .iter()
         .filter_map(|event| match event {
-            RunEvent::SampleCompleted(sample) => Some(sample),
+            RunEvent::SampleCompleted(sample) => Some(sample.as_ref()),
             _ => None,
         })
         .collect()

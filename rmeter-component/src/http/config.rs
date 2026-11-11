@@ -133,7 +133,8 @@ pub struct HttpRequestConfig {
     pub settings: HttpRequestDefaults,
     pub body: HttpBody,
     pub assertions: Vec<AssertionConfig>,
-    /// Run after assertions, in order, with the complete response in readonly `prev`.
+    /// Run before assertions, in order, with the complete response in readonly `prev`.
+    pub pre_processors: Vec<crate::JavaScriptConfig>,
     pub post_processors: Vec<crate::JavaScriptConfig>,
     /// Complete input for post-processors, independent from assertions/report storage.
     pub max_post_processor_body_bytes: usize,
@@ -160,6 +161,7 @@ impl HttpRequestConfig {
             settings: HttpRequestDefaults::default(),
             body: HttpBody::Empty,
             assertions: Vec::new(),
+            pre_processors: Vec::new(),
             post_processors: Vec::new(),
             max_post_processor_body_bytes: 8 * 1024 * 1024,
             max_assertion_body_bytes: 8 * 1024 * 1024,

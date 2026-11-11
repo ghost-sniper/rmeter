@@ -25,6 +25,7 @@ pub struct JdbcSampler {
     config: JdbcSamplerConfig,
     connection: Arc<JdbcConnection>,
     assertions: Vec<ResponseAssertion>,
+    pre_processors: Vec<crate::JavaScriptSampler>,
     post_processors: Vec<crate::JavaScriptSampler>,
 }
 impl JdbcSampler {
@@ -101,12 +102,15 @@ impl JdbcSampler {
             .map(ResponseAssertion::new)
             .collect::<Result<_, _>>()
             .map_err(|e| JdbcConfigError::new(e.to_string()))?;
+        let pre_processors = crate::post_processor::compile(&config.pre_processors)
+            .map_err(|e| JdbcConfigError::new(e.to_string()))?;
         let post_processors = crate::post_processor::compile(&config.post_processors)
             .map_err(|e| JdbcConfigError::new(e.to_string()))?;
         Ok(Self {
             config,
             connection,
             assertions,
+            pre_processors,
             post_processors,
         })
     }
@@ -258,6 +262,13 @@ impl Sampler for JdbcSampler {
             response_body: None,
             assertions: vec![],
         };
+        if !crate::post_processor::run_pre(&self.pre_processors, context, &mut result).await {
+            super::variables::clear(&self.config, &mut context.variables);
+            result.elapsed = started.elapsed();
+            return Ok(result);
+        }
+        let started = Instant::now();
+        result.started_at = SystemTime::now();
         let expand = || -> Result<(String, String, Vec<Parameter>), Failure> {
             let expand = |text: &str| {
                 template::expand(text, &context.variables).map_err(|e| Failure::config(e.message))
@@ -312,6 +323,14 @@ impl Sampler for JdbcSampler {
             }
         }
         result.elapsed = started.elapsed();
+        crate::post_processor::run(
+            &self.post_processors,
+            context,
+            &mut result,
+            payload.as_deref(),
+            Some("complete JDBC result is unavailable"),
+        )
+        .await;
         let diagnostics = evaluate_assertions(
             &self.assertions,
             &AssertionInput {
@@ -325,14 +344,6 @@ impl Sampler for JdbcSampler {
         for assertion in diagnostics {
             result.add_assertion(assertion);
         }
-        crate::post_processor::run(
-            &self.post_processors,
-            context,
-            &mut result,
-            payload.as_deref(),
-            Some("complete JDBC result is unavailable"),
-        )
-        .await;
         if self.config.save_response_body {
             result.response_body = payload;
         }

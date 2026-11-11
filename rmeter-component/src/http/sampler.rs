@@ -27,6 +27,7 @@ pub struct HttpSampler {
     config: HttpRequestConfig,
     client: Client,
     assertions: Vec<ResponseAssertion>,
+    pre_processors: Vec<crate::JavaScriptSampler>,
     post_processors: Vec<crate::JavaScriptSampler>,
 }
 
@@ -74,6 +75,8 @@ impl HttpSampler {
                 "max_post_processor_body_bytes must be positive",
             ));
         }
+        let pre_processors = crate::post_processor::compile(&config.pre_processors)
+            .map_err(|e| HttpConfigError::new(e.to_string()))?;
         let post_processors = crate::post_processor::compile(&config.post_processors)
             .map_err(|e| HttpConfigError::new(e.to_string()))?;
         let assertions = config
@@ -143,6 +146,7 @@ impl HttpSampler {
             config,
             client,
             assertions,
+            pre_processors,
             post_processors,
         };
         // Validate static requests before running. Values depending on user variables
@@ -234,11 +238,6 @@ impl HttpSampler {
         context: &mut UserContext,
     ) -> SampleResult {
         result.elapsed = started.elapsed();
-        self.apply_assertions(
-            &mut result,
-            None,
-            Some("request failed before a complete response was available"),
-        );
         crate::post_processor::run(
             &self.post_processors,
             context,
@@ -247,6 +246,11 @@ impl HttpSampler {
             Some("request failed before a complete response was available"),
         )
         .await;
+        self.apply_assertions(
+            &mut result,
+            None,
+            Some("request failed before a complete response was available"),
+        );
         result
     }
 }
@@ -274,6 +278,12 @@ impl Sampler for HttpSampler {
                 .then(Vec::new),
             assertions: Vec::new(),
         };
+        if !crate::post_processor::run_pre(&self.pre_processors, context, &mut result).await {
+            result.elapsed = started.elapsed();
+            return Ok(result);
+        }
+        let started = Instant::now();
+        result.started_at = SystemTime::now();
         match template::expand(&self.config.label, &context.variables) {
             Ok(label) => result.label = label,
             Err(error) => {
@@ -373,7 +383,6 @@ impl Sampler for HttpSampler {
         } else {
             None
         };
-        self.apply_assertions(&mut result, assertion_body.as_deref(), reason.as_deref());
         let post_reason = if !response_complete {
             Some("response body is incomplete".to_owned())
         } else if post_body_overflow {
@@ -396,6 +405,7 @@ impl Sampler for HttpSampler {
             post_reason.as_deref(),
         )
         .await;
+        self.apply_assertions(&mut result, assertion_body.as_deref(), reason.as_deref());
         Ok(result)
     }
 }

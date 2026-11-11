@@ -1,4 +1,4 @@
-//! Shared post-processing for HTTP and JDBC; no additional sample events.
+//! Shared processors for all samplers; no additional sample events.
 use crate::{JavaScriptConfig, JavaScriptConfigError, JavaScriptSampler};
 use rmeter_core::{context::UserContext, sampler::SampleResult};
 use std::sync::Arc;
@@ -9,7 +9,14 @@ pub(crate) fn compile(
     configs
         .iter()
         .cloned()
-        .map(JavaScriptSampler::new)
+        .map(|config| {
+            if !config.pre_processors.is_empty() || !config.post_processors.is_empty() {
+                return Err(JavaScriptConfigError(
+                    "processors cannot contain processors".into(),
+                ));
+            }
+            JavaScriptSampler::new(config)
+        })
         .collect()
 }
 
@@ -33,7 +40,7 @@ pub(crate) async fn run(
             Some(unavailable_reason.unwrap_or("complete response body is unavailable")),
         ),
     };
-    // Snapshot the parent result after assertions. Processor writes only affect
+    // Snapshot the parent result before assertions. Processor writes only affect
     // user variables, and never change the result seen by subsequent processors.
     let previous = Arc::new(serde_json::json!({
         "label": result.label, "success": result.success,
@@ -42,7 +49,10 @@ pub(crate) async fn run(
         "body": body, "bodyUnavailableReason": reason,
     }));
     for processor in processors {
-        if let Err((code, message)) = processor.run(user, Some(previous.clone())).await {
+        if let Err((code, message)) = processor
+            .run(user, Some(previous.clone()), &result.label)
+            .await
+        {
             result.success = false;
             let diagnostic = format!(
                 "post processor {:?} failed ({code}): {message}",
@@ -55,4 +65,24 @@ pub(crate) async fn run(
             break;
         }
     }
+}
+
+/// A failed preprocessor aborts the parent request and the remaining chain.
+pub(crate) async fn run_pre(
+    processors: &[JavaScriptSampler],
+    user: &mut UserContext,
+    result: &mut SampleResult,
+) -> bool {
+    for processor in processors {
+        if let Err((code, message)) = processor.run(user, None, &result.label).await {
+            result.success = false;
+            result.response_code = Some(code.into());
+            result.response_message = Some(format!(
+                "pre processor {:?} failed ({code}): {message}",
+                processor.config().name
+            ));
+            return false;
+        }
+    }
+    true
 }

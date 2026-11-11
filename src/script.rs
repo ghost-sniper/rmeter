@@ -301,6 +301,10 @@ struct JavaScriptNodeConfig {
     script: String,
     timeout_ms: Option<u64>,
     max_variable_bytes: Option<usize>,
+    #[serde(default)]
+    pre_processors: Vec<Enabled<PostProcessorConfig>>,
+    #[serde(default)]
+    post_processors: Vec<Enabled<PostProcessorConfig>>,
 }
 impl JavaScriptNodeConfig {
     fn into_config(self) -> Result<JavaScriptConfig, ScriptError> {
@@ -312,6 +316,18 @@ impl JavaScriptNodeConfig {
         if let Some(value) = self.max_variable_bytes {
             config.max_variable_bytes = value;
         }
+        config.pre_processors = self
+            .pre_processors
+            .into_iter()
+            .filter_map(|v| v.0)
+            .map(PostProcessorConfig::into_config)
+            .collect::<Result<_, _>>()?;
+        config.post_processors = self
+            .post_processors
+            .into_iter()
+            .filter_map(|v| v.0)
+            .map(PostProcessorConfig::into_config)
+            .collect::<Result<_, _>>()?;
         Ok(config)
     }
 }
@@ -324,7 +340,14 @@ enum PostProcessorConfig {
 impl PostProcessorConfig {
     fn into_config(self) -> Result<JavaScriptConfig, ScriptError> {
         match self {
-            Self::Javascript(config) => config.into_config(),
+            Self::Javascript(config) => {
+                if !config.pre_processors.is_empty() || !config.post_processors.is_empty() {
+                    return Err(ScriptError::Invalid(
+                        "processors cannot contain processors".into(),
+                    ));
+                }
+                config.into_config()
+            }
         }
     }
 }
@@ -355,6 +378,8 @@ enum NodeConfig {
         #[serde(default)]
         assertions: Vec<Enabled<AssertionConfig>>,
         #[serde(default)]
+        pre_processors: Vec<Enabled<PostProcessorConfig>>,
+        #[serde(default)]
         post_processors: Vec<Enabled<PostProcessorConfig>>,
     },
     HttpRequest {
@@ -369,6 +394,8 @@ enum NodeConfig {
         #[serde(default)]
         assertions: Vec<Enabled<AssertionConfig>>,
         max_assertion_body_bytes: Option<usize>,
+        #[serde(default)]
+        pre_processors: Vec<Enabled<PostProcessorConfig>>,
         #[serde(default)]
         post_processors: Vec<Enabled<PostProcessorConfig>>,
         max_post_processor_body_bytes: Option<usize>,
@@ -484,6 +511,7 @@ impl NodeConfig {
                 variable_names,
                 row_count_variable,
                 assertions,
+                pre_processors,
                 post_processors,
             } => {
                 require_name(&name, "jdbc_request")?;
@@ -508,6 +536,11 @@ impl NodeConfig {
                 request.result_variable = result_variable;
                 request.variable_names = variable_names;
                 request.row_count_variable = row_count_variable;
+                request.pre_processors = pre_processors
+                    .into_iter()
+                    .filter_map(|v| v.0)
+                    .map(PostProcessorConfig::into_config)
+                    .collect::<Result<_, _>>()?;
                 request.post_processors = post_processors
                     .into_iter()
                     .filter_map(|item| item.0)
@@ -528,6 +561,7 @@ impl NodeConfig {
                 body,
                 assertions,
                 max_assertion_body_bytes,
+                pre_processors,
                 post_processors,
                 max_post_processor_body_bytes,
             } => {
@@ -542,6 +576,11 @@ impl NodeConfig {
                 })?;
                 request.settings = settings.into_config();
                 request.body = body.into_body();
+                request.pre_processors = pre_processors
+                    .into_iter()
+                    .filter_map(|v| v.0)
+                    .map(PostProcessorConfig::into_config)
+                    .collect::<Result<_, _>>()?;
                 request.post_processors = post_processors
                     .into_iter()
                     .filter_map(|item| item.0)

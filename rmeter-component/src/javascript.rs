@@ -34,6 +34,10 @@ pub struct JavaScriptConfig {
     pub timeout: Duration,
     /// Total UTF-8 bytes in variable names and values, including initial variables.
     pub max_variable_bytes: usize,
+    #[serde(default)]
+    pub pre_processors: Vec<JavaScriptConfig>,
+    #[serde(default)]
+    pub post_processors: Vec<JavaScriptConfig>,
 }
 
 impl JavaScriptConfig {
@@ -43,6 +47,8 @@ impl JavaScriptConfig {
             script: script.into(),
             timeout: Duration::from_millis(100),
             max_variable_bytes: 1024 * 1024,
+            pre_processors: Vec::new(),
+            post_processors: Vec::new(),
         }
     }
 }
@@ -59,6 +65,8 @@ impl std::error::Error for JavaScriptConfigError {}
 #[derive(Debug, Clone)]
 pub struct JavaScriptSampler {
     config: Arc<JavaScriptConfig>,
+    pre_processors: Vec<JavaScriptSampler>,
+    post_processors: Vec<JavaScriptSampler>,
 }
 
 impl JavaScriptSampler {
@@ -78,6 +86,8 @@ impl JavaScriptSampler {
         if config.max_variable_bytes == 0 {
             return Err(invalid("max_variable_bytes must be positive"));
         }
+        let pre_processors = crate::post_processor::compile(&config.pre_processors)?;
+        let post_processors = crate::post_processor::compile(&config.post_processors)?;
         let config = Arc::new(config);
         process::invoke(
             Request {
@@ -89,10 +99,15 @@ impl JavaScriptSampler {
             },
             &AtomicBool::new(false),
         )
+        .and_then(Response::into_variables)
         .map_err(|(_, message)| {
             JavaScriptConfigError(format!("JavaScript {:?}: {message}", config.name))
         })?;
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            pre_processors,
+            post_processors,
+        })
     }
 
     pub fn config(&self) -> &JavaScriptConfig {
@@ -105,12 +120,14 @@ impl JavaScriptSampler {
         &self,
         user: &mut UserContext,
         previous: Option<Arc<serde_json::Value>>,
+        sampler_name: &str,
     ) -> Result<(), (&'static str, String)> {
         let config = self.config.clone();
         let variables = user.variables.clone();
         let metadata = serde_json::json!({
             "groupName": user.group_name, "userIndex": user.user_index,
             "iteration": user.iteration, "lastSampleOk": user.last_sample_ok,
+            "samplerName": sampler_name,
         });
         let cancel = CancelOnDrop(Arc::new(AtomicBool::new(false)));
         let signal = cancel.0.clone();
@@ -128,7 +145,9 @@ impl JavaScriptSampler {
         })
         .await
         .map_err(|e| ("Internal", e.to_string()))?;
-        user.variables = outcome?;
+        let response = outcome?;
+        user.script_logs.extend(response.logs.clone());
+        user.variables = response.into_variables()?;
         Ok(())
     }
 }
@@ -145,11 +164,29 @@ impl Sampler for JavaScriptSampler {
     async fn sample(&self, user: &mut UserContext) -> Result<SampleResult, SampleError> {
         let started_at = SystemTime::now();
         let started = Instant::now();
-        let (success, code, message) = match self.run(user, None).await {
+        let mut pre_result = SampleResult {
+            label: self.config.name.clone(),
+            started_at,
+            elapsed: Duration::ZERO,
+            success: false,
+            response_code: None,
+            response_message: None,
+            bytes_sent: 0,
+            bytes_received: 0,
+            response_body: None,
+            assertions: Vec::new(),
+        };
+        if !crate::post_processor::run_pre(&self.pre_processors, user, &mut pre_result).await {
+            pre_result.elapsed = started.elapsed();
+            return Ok(pre_result);
+        }
+        let started_at = SystemTime::now();
+        let started = Instant::now();
+        let (success, code, message) = match self.run(user, None, &self.config.name).await {
             Ok(()) => (true, "OK", None),
             Err((code, message)) => (false, code, Some(message)),
         };
-        Ok(SampleResult {
+        let mut result = SampleResult {
             label: self.config.name.clone(),
             started_at,
             elapsed: started.elapsed(),
@@ -160,7 +197,16 @@ impl Sampler for JavaScriptSampler {
             bytes_received: 0,
             response_body: None,
             assertions: Vec::new(),
-        })
+        };
+        crate::post_processor::run(
+            &self.post_processors,
+            user,
+            &mut result,
+            None,
+            Some("JavaScript sampler has no response body"),
+        )
+        .await;
+        Ok(result)
     }
 }
 
@@ -179,6 +225,21 @@ struct Request {
 struct Response {
     variables: Option<HashMap<String, String>>,
     error: Option<(String, String)>,
+    logs: rmeter_core::context::ScriptLogs,
+}
+impl Response {
+    fn into_variables(self) -> ExecutionResult {
+        if let Some((code, message)) = self.error {
+            let code = match code.as_str() {
+                "JavaScriptError" => "JavaScriptError",
+                "Timeout" => "Timeout",
+                _ => "Internal",
+            };
+            return Err((code, message));
+        }
+        self.variables
+            .ok_or_else(|| ("Internal", "worker response missing variables".into()))
+    }
 }
 
 /// Entry point for the separately deployed rmeter-js-worker executable.
@@ -207,15 +268,18 @@ pub fn worker_main() -> std::process::ExitCode {
             return Err("worker request too large".into());
         }
         let request: Request = serde_json::from_slice(&bytes)?;
-        let result = engine::execute(request);
+        let mut logs = Default::default();
+        let result = engine::execute(request, &mut logs);
         let response = match result {
             Ok(variables) => Response {
                 variables: Some(variables),
                 error: None,
+                logs,
             },
             Err((code, message)) => Response {
                 variables: None,
                 error: Some((code.into(), message)),
+                logs,
             },
         };
         let bytes = serde_json::to_vec(&response)?;

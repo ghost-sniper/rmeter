@@ -1003,3 +1003,100 @@ fn malformed_or_mixed_component_fields_are_rejected() {
         );
     }
 }
+
+#[test]
+fn pre_and_post_processor_schema_is_supported_on_every_sampler_and_skips_disabled_scripts() {
+    for node in [
+        json!({"type":"http_request","name":"HTTP","url":"http://localhost/"}),
+        json!({"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT 1"}),
+        json!({"type":"javascript","name":"JS","script":""}),
+    ] {
+        let mut source = json!({"version":1,"name":"processors","jdbc_connections":[{"name":"db","variable_name":"db","url":"postgresql://localhost/test"}],"groups":[{"name":"g","children":[node]}]});
+        for phase in ["pre_processors", "post_processors"] {
+            source["groups"][0]["children"][0][phase] = json!([
+                {"type":"javascript","name":"valid","script":"throw new Error('not executed in validation');"},
+                {"type":"javascript","enabled":false,"name":"disabled","script":"syntax ("}
+            ]);
+            parse_script(&source.to_string()).unwrap();
+            for bad in [
+                json!(null),
+                json!({}),
+                json!([{"type":"javascript","name":"syntax","script":"("}]),
+                json!([{"type":"javascript","name":"nested","script":"","pre_processors":[{"type":"javascript","name":"child","script":""}]}]),
+            ] {
+                let mut invalid = source.clone();
+                invalid["groups"][0]["children"][0][phase] = bad;
+                assert!(parse_script(&invalid.to_string()).is_err(), "{invalid}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn processor_logs_are_per_sample_and_variables_remain_per_user() {
+    let source = json!({"version":1,"name":"logs","groups":[{"name":"g","users":2,"iterations":2,"children":[
+        {"type":"javascript","name":"parent","timeout_ms":5000,"script":"if(vars.get('owner') !== String(ctx.userIndex)) throw new Error('isolation'); log.info('main');",
+         "pre_processors":[{"type":"javascript","name":"pre","timeout_ms":5000,"script":"vars.put('owner', String(ctx.userIndex)); log.info('pre');"}],
+         "post_processors":[{"type":"javascript","name":"post","timeout_ms":5000,"script":"if(!prev.success) throw new Error('main failed'); log.info('post');"}]},
+        {"type":"javascript","name":"quiet","script":""}
+    ]}]}).to_string();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let (result, events) = tokio::join!(run_script(&source, sender), async {
+        let mut events = Vec::new();
+        while let Some(event) = receiver.recv().await {
+            events.push(ReportEvent::from(event));
+        }
+        events
+    });
+    result.unwrap();
+    let mut count = 0;
+    for event in events {
+        if let ReportEvent::SampleCompleted {
+            label,
+            success,
+            script_logs,
+            ..
+        } = event
+        {
+            assert!(success);
+            count += 1;
+            let expected = if label == "parent" {
+                vec!["pre", "main", "post"]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                script_logs
+                    .entries
+                    .iter()
+                    .map(|l| l.message.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+    assert_eq!(count, 8);
+}
+
+#[tokio::test]
+async fn deadline_cancels_preprocessor_before_request_and_sample_event() {
+    let source = json!({"version":1,"name":"cancel","groups":[{"name":"g","max_duration_ms":100,"children":[
+        {"type":"http_request","name":"never sent","url":"http://127.0.0.1:1/",
+        "pre_processors":[{"type":"javascript","name":"endless","timeout_ms":60000,"script":"while(true){}"}]}
+    ]}]}).to_string();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let (result, count) = within("cancel preprocessor", async {
+        tokio::join!(run_script(&source, sender), async {
+            let mut count = 0;
+            while let Some(event) = receiver.recv().await {
+                if matches!(event, rmeter::RunEvent::SampleCompleted(_)) {
+                    count += 1;
+                }
+            }
+            count
+        })
+    })
+    .await;
+    result.unwrap();
+    assert_eq!(count, 0);
+}

@@ -8,6 +8,7 @@ pub struct SampleEvent {
     pub user_index: usize,
     pub iteration: u64,
     pub result: SampleResult,
+    pub script_logs: crate::context::ScriptLogs,
 }
 
 impl SampleEvent {
@@ -17,12 +18,13 @@ impl SampleEvent {
             user_index: ctx.user_index,
             iteration: ctx.iteration,
             result,
+            script_logs: ctx.script_logs.clone(),
         }
     }
 }
 #[derive(Debug)]
 pub enum RunEvent {
     Started { at: SystemTime },
-    SampleCompleted(SampleEvent),
+    SampleCompleted(Box<SampleEvent>),
     Finished { at: SystemTime },
 }

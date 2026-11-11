@@ -118,7 +118,10 @@ fn internal(error: impl std::fmt::Display) -> (&'static str, String) {
     ("Internal", error.to_string())
 }
 
-pub(super) fn execute(request: Request) -> ExecutionResult {
+pub(super) fn execute(
+    request: Request,
+    output_logs: &mut rmeter_core::context::ScriptLogs,
+) -> ExecutionResult {
     let Request {
         config,
         variables,
@@ -167,18 +170,51 @@ pub(super) fn execute(request: Request) -> ExecutionResult {
         limit: config.max_variable_bytes,
         quota_exceeded: false,
     }));
+    let logs = Rc::new(RefCell::new(rmeter_core::context::ScriptLogs::default()));
     let result = context.with(|ctx| {
         let setup = || -> rquickjs::Result<()> {
             let globals = ctx.globals();
             let freeze: Function = ctx.eval("Object.freeze")?;
-            let vars: Object = freeze.call((bind_variables(&ctx, &state)?,))?;
+            let vars = bind_variables(&ctx, &state)?;
+            let iteration = metadata["iteration"].as_u64().unwrap_or(0).saturating_add(1);
+            vars.set("getIteration", Function::new(ctx.clone(), move || iteration)?)?;
+            let vars: Object = freeze.call((vars,))?;
             globals.prop("vars", vars)?;
-            let info: Object = freeze.call((ctx.json_parse(metadata.to_string())?,))?;
+            let info = ctx.json_parse(metadata.to_string())?;
+            let decorate: Function = ctx.eval("(c) => { c.getThreadNum = () => c.userIndex; c.getVariables = () => vars; return Object.freeze(c); }")?;
+            let info: Object = decorate.call((info,))?;
             globals.prop("ctx", info)?;
+            globals.prop("Label", config.name.clone())?;
+            let sampler: Object = ctx.eval("Object.freeze({name:ctx.samplerName, getName:()=>ctx.samplerName})")?;
+            globals.prop("sampler", sampler)?;
             if let Some(previous) = previous {
-                let snapshot: Object = freeze.call((ctx.json_parse(previous.to_string())?,))?;
+                let snapshot = ctx.json_parse(previous.to_string())?;
+                let decorate: Function = ctx.eval("(p) => { p.getResponseDataAsString=()=>p.body; p.getResponseCode=()=>p.responseCode; p.getResponseMessage=()=>p.responseMessage; p.getSampleLabel=()=>p.label; p.getTime=()=>p.elapsedMs; p.isSuccessful=()=>p.success; return Object.freeze(p); }")?;
+                let snapshot: Object = decorate.call((snapshot,))?;
                 globals.prop("prev", snapshot)?;
             }
+            let sink = logs.clone();
+            let source = config.name.clone();
+            let write = Function::new(ctx.clone(), move |level: String, message: String| {
+                sink.borrow_mut().push(rmeter_core::context::ScriptLog {
+                    level, source: source.clone(), message,
+                });
+            })?;
+            let make_log: Function = ctx.eval(r#"(write) => {
+                const log = {};
+                for (const level of ['trace','debug','info','warn','error']) {
+                    log[level] = (message, ...args) => {
+                        let i = 0;
+                        const text = String(message).replace(/\{\}/g, () => i < args.length ? String(args[i++]) : '{}');
+                        write(level, text + (i < args.length ? ' ' + args.slice(i).map(String).join(' ') : ''));
+                    };
+                }
+                log.isDebugEnabled = () => true;
+                log.isInfoEnabled = () => true;
+                return Object.freeze(log);
+            }"#)?;
+            let log: Object = make_log.call((write,))?;
+            globals.prop("log", log)?;
             Ok(())
         };
         setup().catch(&ctx).map_err(internal)?;
@@ -190,6 +226,7 @@ pub(super) fn execute(request: Request) -> ExecutionResult {
             .catch(&ctx)
             .map_err(script_error)
     });
+    *output_logs = std::mem::take(&mut *logs.borrow_mut());
     if interrupted.load(Ordering::Relaxed) {
         return Err(("Timeout", "JavaScript deadline exceeded".into()));
     }

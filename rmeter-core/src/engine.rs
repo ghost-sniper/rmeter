@@ -222,6 +222,7 @@ async fn execute_user<S: Sampler>(
                 };
             let started_at = SystemTime::now();
             let started = Instant::now();
+            context.script_logs = Default::default();
             let result = match sampler.sample(&mut context).await {
                 Ok(result) => result,
                 Err(error) => SampleResult {
@@ -239,9 +240,9 @@ async fn execute_user<S: Sampler>(
             };
             context.last_sample_ok = result.success;
             events
-                .send(RunEvent::SampleCompleted(SampleEvent::new(
+                .send(RunEvent::SampleCompleted(Box::new(SampleEvent::new(
                     &context, result,
-                )))
+                ))))
                 .await
                 .map_err(|_| EngineError::EventsClosed)?;
 
@@ -389,7 +390,7 @@ mod tests {
         events
             .iter()
             .filter_map(|event| match event {
-                RunEvent::SampleCompleted(sample) => Some(sample),
+                RunEvent::SampleCompleted(sample) => Some(sample.as_ref()),
                 _ => None,
             })
             .collect()
