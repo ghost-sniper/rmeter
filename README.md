@@ -432,3 +432,24 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 后置的只读 `prev` 新增 `getResponseDataAsString/getResponseCode/getResponseMessage/getSampleLabel/getTime/isSuccessful` 方法，对应已有字段。前置及独立采样器不提供 `prev`；JavaScript 采样器的后置提供本次执行状态，但无响应体（body 为 null）。这些 API 参考 JMeter 的 JSR223 使用方式，不提供 Java 对象、props、文件或网络 I/O。
 
 兼容变化：后置改在断言之前执行，因此 prev.success 只反映采样器状态；失败断言仍使最终采样失败。采样事件 RunEvent::SampleCompleted 的载荷改为 Box<SampleEvent>，包含有界日志；JSON 报告结构仅新增 script_logs。
+
+
+## HTTP 响应提取器
+
+HTTP `post_processors` 现在支持混合排列 `javascript` 与 `jsonpath_extractor`、`xpath_extractor`、`jmespath_extractor`、`regex_extractor`、`xpath2_extractor`。只允许在 HTTP 后置阶段使用提取器，前置、JDBC、JavaScript 采样器不接受它们。禁用与其他组件相同（`enabled:false`）。
+
+```json
+{"type":"jsonpath_extractor","name":"提取 token","variable_name":"token","expression":"$.token","match_number":1,"default_value":"","timeout_ms":1000,"max_matches":1000,"max_variable_bytes":1048576}
+```
+
+共同字段为 name、variable_name、expression、match_number（默认 1；0 随机，-1 全部）、default_value（省略/null 不设置基础变量，空字符串可显式设置）、timeout_ms（1–60000，默认 1000）、max_matches（1–100000，默认 1000）、max_variable_bytes（默认 1 MiB，含用户已有变量）。输出为字符串：字符串原样保存，JSON 数字/对象/数组/null 用 JSON 文本。JMESPath 顶层数组分为多个匹配，null 表示无匹配；JSONPath 中明确选中的 null 保存为 "null"。
+
+每次执行先清除该变量的旧基础值、编号值和正则分组，初始化 `变量_matchNr=0` 及配置的默认值。正常完成后 `变量_matchNr` 是匹配总数；正数或随机模式将选中项写入基础变量；全部模式写入 `变量_1`、`变量_2`……，基础变量维持默认值。未匹配或第 N 项越界正常使用默认值。解析错误、容量/匹配数量超限或超时令父采样失败，并停止后续后置处理器；不保留旧值或部分新值。取消时也不会提交提取结果。
+
+正则使用 Rust regex（不支持环视/回溯引用），template 默认 `$1$`，支持 `$0$` 整体匹配及 `$N$` 捕获组，例如 `ID=$1$`。分组存入 `变量_g0`、`变量_g1`……，`变量_g` 是捕获组数；全部模式对应 `变量_1_g0` 等。不存在的分组模板在校验阶段报错。
+
+XPath 使用 SXD XPath 1.0；XPath2 使用 Xee XPath 3.1 引擎，支持 XPath 2.0 的序列、for、upper-case、string-join 等。两者支持 namespaces 字符串映射；XPath2 支持空前缀指定默认元素命名空间。节点返回字符串值，标量/序列按值输出。XML 要求合法文档，不做 HTML 容错，不允许 DTD/外部实体；XPath2 默认动态上下文不注册外部资源或进程环境变量。
+
+五种提取器都在同版本 `rmeter-js-worker` 中解析/执行，复用进程内存、执行超时和取消回收机制，避免复杂 XPath2 表达式阻塞宿主。worker 缺失时带提取器的计划会明确校验失败；不使用 JavaScript/提取器的 HTTP/JDBC 仍可运行。提取输入使用完整 UTF-8 HTTP 响应，与报告预览保存无关，受 `max_post_processor_body_bytes` 限制（默认 8 MiB）。输入不可用时失败，不对截断正文做部分提取。处理器只增加诊断日志，不额外增加采样数量。
+
+Rust API：HTTP 的 `post_processors` 改为 `Vec<HttpPostProcessorConfig>`；`add_post_processor` 接受 JavaScriptConfig 或 ExtractorConfig，也可以将它们 `.into()` 放入数组。原生 JSON 中现有 JavaScript 后置处理器格式不变。

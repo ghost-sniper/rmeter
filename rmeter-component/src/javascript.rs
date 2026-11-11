@@ -96,6 +96,7 @@ impl JavaScriptSampler {
                 metadata: serde_json::json!({}),
                 previous: None,
                 check_only: true,
+                extractor: None,
             },
             &AtomicBool::new(false),
         )
@@ -139,6 +140,7 @@ impl JavaScriptSampler {
                     metadata,
                     previous,
                     check_only: false,
+                    extractor: None,
                 },
                 &signal,
             )
@@ -219,6 +221,7 @@ struct Request {
     metadata: serde_json::Value,
     previous: Option<Arc<serde_json::Value>>,
     check_only: bool,
+    extractor: Option<crate::extractor::ExtractorConfig>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -233,6 +236,7 @@ impl Response {
             let code = match code.as_str() {
                 "JavaScriptError" => "JavaScriptError",
                 "Timeout" => "Timeout",
+                "ExtractorError" => "ExtractorError",
                 _ => "Internal",
             };
             return Err((code, message));
@@ -269,7 +273,21 @@ pub fn worker_main() -> std::process::ExitCode {
         }
         let request: Request = serde_json::from_slice(&bytes)?;
         let mut logs = Default::default();
-        let result = engine::execute(request, &mut logs);
+        let result = if let Some(config) = &request.extractor {
+            (if request.check_only {
+                crate::extractor::validate(config).map(|_| HashMap::new())
+            } else {
+                let body = request
+                    .previous
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                crate::extractor::execute(config, body, request.variables)
+            })
+            .map_err(|e| ("ExtractorError", e.chars().take(4096).collect()))
+        } else {
+            engine::execute(request, &mut logs)
+        };
         let response = match result {
             Ok(variables) => Response {
                 variables: Some(variables),
@@ -295,4 +313,57 @@ pub fn worker_main() -> std::process::ExitCode {
     } else {
         std::process::ExitCode::from(2)
     }
+}
+
+pub(crate) fn check_extractor(
+    extractor: crate::extractor::ExtractorConfig,
+) -> Result<(), (&'static str, String)> {
+    process::invoke(
+        Request {
+            config: Arc::new(crate::extractor::worker_config(&extractor)),
+            variables: HashMap::new(),
+            metadata: serde_json::json!({}),
+            previous: None,
+            check_only: true,
+            extractor: Some(extractor),
+        },
+        &AtomicBool::new(false),
+    )
+    .and_then(Response::into_variables)
+    .map(|_| ())
+}
+pub(crate) async fn run_extractor(
+    extractor: Arc<crate::extractor::ExtractorConfig>,
+    user: &mut UserContext,
+    body: &str,
+) -> Result<(), (&'static str, String)> {
+    let request = Request {
+        config: Arc::new(crate::extractor::worker_config(&extractor)),
+        variables: user.variables.clone(),
+        metadata: serde_json::json!({}),
+        previous: Some(Arc::new(serde_json::Value::String(body.into()))),
+        check_only: false,
+        extractor: Some((*extractor).clone()),
+    };
+    let cancel = CancelOnDrop(Arc::new(AtomicBool::new(false)));
+    let signal = cancel.0.clone();
+    let variables = tokio::task::spawn_blocking(move || {
+        process::invoke(request, &signal).and_then(Response::into_variables)
+    })
+    .await
+    .map_err(|e| ("Internal", e.to_string()))??;
+    let count = variables
+        .get(&format!("{}_matchNr", extractor.settings.variable_name))
+        .cloned()
+        .unwrap_or_default();
+    user.variables = variables;
+    user.script_logs.push(rmeter_core::context::ScriptLog {
+        level: "info".into(),
+        source: extractor.settings.name.clone(),
+        message: format!(
+            "extracted {count} match(es) into {:?}",
+            extractor.settings.variable_name
+        ),
+    });
+    Ok(())
 }

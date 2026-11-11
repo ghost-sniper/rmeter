@@ -28,7 +28,7 @@ pub struct HttpSampler {
     client: Client,
     assertions: Vec<ResponseAssertion>,
     pre_processors: Vec<crate::JavaScriptSampler>,
-    post_processors: Vec<crate::JavaScriptSampler>,
+    post_processors: Vec<crate::post_processor::HttpPostProcessor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,7 +77,7 @@ impl HttpSampler {
         }
         let pre_processors = crate::post_processor::compile(&config.pre_processors)
             .map_err(|e| HttpConfigError::new(e.to_string()))?;
-        let post_processors = crate::post_processor::compile(&config.post_processors)
+        let post_processors = crate::post_processor::compile_http(&config.post_processors)
             .map_err(|e| HttpConfigError::new(e.to_string()))?;
         let assertions = config
             .assertions
@@ -238,7 +238,7 @@ impl HttpSampler {
         context: &mut UserContext,
     ) -> SampleResult {
         result.elapsed = started.elapsed();
-        crate::post_processor::run(
+        crate::post_processor::run_http(
             &self.post_processors,
             context,
             &mut result,
@@ -393,7 +393,7 @@ impl Sampler for HttpSampler {
         } else {
             None
         };
-        crate::post_processor::run(
+        crate::post_processor::run_http(
             &self.post_processors,
             context,
             &mut result,

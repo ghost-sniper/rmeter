@@ -217,7 +217,10 @@ impl Assertion for XmlAssertion {
 }
 
 pub(super) fn parse_body(input: &AssertionInput<'_>) -> Result<Package, String> {
-    let text = body_text(input)?.trim_start_matches('\u{feff}');
+    parse_text(body_text(input)?)
+}
+pub(crate) fn checked_text(text: &str) -> Result<&str, String> {
+    let text = text.trim_start_matches('\u{feff}');
     // Disallow DTDs without mistaking literal markers in comments/CDATA for a DTD.
     let mut rest = text;
     while let Some(start) = rest.find('<') {
@@ -243,6 +246,11 @@ pub(super) fn parse_body(input: &AssertionInput<'_>) -> Result<Package, String> 
             rest = &rest[1..];
         }
     }
+    Ok(text)
+}
+
+pub(crate) fn parse_text(text: &str) -> Result<Package, String> {
+    let text = checked_text(text)?;
     let package = parser::parse(text).map_err(|error| format!("invalid XML response: {error}"))?;
     coalesce_text(&package);
     Ok(package)

@@ -24,6 +24,9 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 uuid = "1"
 serde = { workspace = true, features = ["rc"] }
 rquickjs = "0.14"
+xee-xpath = "0.1.5"
+jmespath = "0.5"
+rand = "0.10"
 
 [[bin]]
 name = "rmeter-js-worker"

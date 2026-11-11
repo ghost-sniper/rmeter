@@ -86,3 +86,85 @@ pub(crate) async fn run_pre(
     }
     true
 }
+
+#[derive(Debug, Clone)]
+pub enum HttpPostProcessorConfig {
+    JavaScript(JavaScriptConfig),
+    Extractor(crate::extractor::ExtractorConfig),
+}
+impl From<JavaScriptConfig> for HttpPostProcessorConfig {
+    fn from(value: JavaScriptConfig) -> Self {
+        Self::JavaScript(value)
+    }
+}
+impl From<crate::extractor::ExtractorConfig> for HttpPostProcessorConfig {
+    fn from(value: crate::extractor::ExtractorConfig) -> Self {
+        Self::Extractor(value)
+    }
+}
+#[derive(Debug, Clone)]
+pub(crate) enum HttpPostProcessor {
+    JavaScript(JavaScriptSampler),
+    Extractor(crate::extractor::Extractor),
+}
+pub(crate) fn compile_http(
+    configs: &[HttpPostProcessorConfig],
+) -> Result<Vec<HttpPostProcessor>, JavaScriptConfigError> {
+    configs
+        .iter()
+        .map(|config| match config {
+            HttpPostProcessorConfig::JavaScript(config) => {
+                let mut scripts = compile(std::slice::from_ref(config))?;
+                Ok(HttpPostProcessor::JavaScript(scripts.remove(0)))
+            }
+            HttpPostProcessorConfig::Extractor(config) => Ok(HttpPostProcessor::Extractor(
+                crate::extractor::Extractor::new(config.clone())?,
+            )),
+        })
+        .collect()
+}
+pub(crate) async fn run_http(
+    processors: &[HttpPostProcessor],
+    user: &mut UserContext,
+    result: &mut SampleResult,
+    body: Option<&[u8]>,
+    reason: Option<&str>,
+) {
+    let (body, reason) = match body {
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => (Some(text), None),
+            Err(_) => (None, Some("response body is not valid UTF-8")),
+        },
+        None => (
+            None,
+            Some(reason.unwrap_or("complete response body is unavailable")),
+        ),
+    };
+    let previous = Arc::new(serde_json::json!({
+        "label":result.label,"success":result.success,"responseCode":result.response_code,"responseMessage":result.response_message,
+        "elapsedMs":result.elapsed.as_secs_f64()*1000.0,"body":body,"bodyUnavailableReason":reason,
+    }));
+    for processor in processors {
+        let (name, outcome) = match processor {
+            HttpPostProcessor::JavaScript(script) => (
+                &script.config().name,
+                script
+                    .run(user, Some(previous.clone()), &result.label)
+                    .await,
+            ),
+            HttpPostProcessor::Extractor(extractor) => (
+                &extractor.config().settings.name,
+                extractor.run(user, body, reason).await,
+            ),
+        };
+        if let Err((code, message)) = outcome {
+            result.success = false;
+            let diagnostic = format!("post processor {name:?} failed ({code}): {message}");
+            result.response_message = Some(match result.response_message.take() {
+                Some(original) => format!("{original}; {diagnostic}"),
+                None => diagnostic,
+            });
+            break;
+        }
+    }
+}

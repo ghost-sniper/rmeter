@@ -68,7 +68,7 @@ async fn http_processors_receive_complete_readonly_results_and_commit_in_order()
                 "derive",
                 "vars.set('authorization', `Bearer ${vars.get('token')}`);",
             ),
-        ];
+        ].into_iter().map(Into::into).collect();
         let mut user = UserContext::new("g", 0);
         let result = HttpSampler::new(config)
             .unwrap()
@@ -100,15 +100,18 @@ async fn processors_run_before_assertions_and_cannot_restore_parent_success() {
     let (url, server) = http_response(response(br#"{"code":1}"#)).await;
     let mut config = HttpRequestConfig::with_url("asserted", url);
     config.add_assertion(JsonAssertionConfig::equals("code", "$.code", json!(0)));
-    config.post_processors = vec![processor(
-        "inspect failure",
-        r#"
+    config.post_processors = vec![
+        processor(
+            "inspect failure",
+            r#"
         if (prev.success !== true) throw new Error('assertions ran too early');
         if (JSON.parse(prev.body).code !== 1) throw new Error('body');
         prev.success = true;
         vars.set('inspected', 'yes');
     "#,
-    )];
+        )
+        .into(),
+    ];
     let mut user = UserContext::new("g", 0);
     let result = HttpSampler::new(config)
         .unwrap()
@@ -133,7 +136,10 @@ async fn processor_failure_rolls_back_its_writes_keeps_prior_commits_and_stops_c
             "vars.remove('old'); vars.set('partial','bad'); throw new Error('extract failed');",
         ),
         processor("skip", "vars.set('ran', 'bad');"),
-    ];
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
     let mut user = UserContext::new("g", 0);
     user.variables.insert("old".into(), "value".into());
     let result = HttpSampler::new(config)
@@ -176,7 +182,7 @@ async fn unavailable_bodies_are_null_with_reasons_and_responses_still_drain() {
             vars.set('checked','yes');
         "#
             ),
-        )];
+        ).into()];
         let mut user = UserContext::new("g", 0);
         let result = HttpSampler::new(config)
             .unwrap()
@@ -199,14 +205,17 @@ async fn unavailable_bodies_are_null_with_reasons_and_responses_still_drain() {
 #[tokio::test]
 async fn http_failure_before_response_still_runs_processors_with_no_stale_body() {
     let mut config = HttpRequestConfig::with_url("invalid", "${missing}");
-    config.post_processors = vec![processor(
-        "failure handler",
-        r#"
+    config.post_processors = vec![
+        processor(
+            "failure handler",
+            r#"
         if (prev.body !== null || prev.success || prev.responseCode !== null
             || !prev.bodyUnavailableReason) throw new Error('stale result');
         vars.set('handled', 'yes');
     "#,
-    )];
+        )
+        .into(),
+    ];
     let mut user = UserContext::new("g", 0);
     let result = HttpSampler::new(config)
         .unwrap()
@@ -223,7 +232,7 @@ async fn post_processor_timeout_rolls_back_and_keeps_http_result() {
     let mut config = HttpRequestConfig::with_url("timeout", url);
     let mut script = processor("endless", "vars.set('partial','bad'); while(true) {}");
     script.timeout = Duration::from_millis(30);
-    config.post_processors.push(script);
+    config.post_processors.push(script.into());
     let mut user = UserContext::new("g", 0);
     let result = HttpSampler::new(config)
         .unwrap()
@@ -315,7 +324,7 @@ async fn pre_processors_supply_http_variables_and_logs_survive_script_errors() {
     config.post_processors = vec![processor(
         "extract",
         "if (prev.getResponseDataAsString() !== 'ok' || !prev.isSuccessful() || prev.getResponseCode() !== '200') throw new Error('prev'); log.warn('received {}', prev.getSampleLabel());",
-    )];
+    ).into()];
     let mut user = UserContext::new("g", 2);
     let result = HttpSampler::new(config)
         .unwrap()
@@ -341,7 +350,7 @@ async fn pre_processors_supply_http_variables_and_logs_survive_script_errors() {
         ),
         processor("skip", "vars.put('ran','bad');"),
     ];
-    config.post_processors = vec![processor("skip post", "vars.put('post','bad');")];
+    config.post_processors = vec![processor("skip post", "vars.put('post','bad');").into()];
     let mut user = UserContext::new("g", 0);
     let result = HttpSampler::new(config)
         .unwrap()

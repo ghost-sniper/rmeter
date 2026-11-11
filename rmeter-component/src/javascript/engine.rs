@@ -128,6 +128,7 @@ pub(super) fn execute(
         metadata,
         previous,
         check_only,
+        extractor: _,
     } = request;
     let bytes = variables.iter().map(|(k, v)| k.len() + v.len()).sum();
     if bytes > config.max_variable_bytes {

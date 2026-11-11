@@ -2,7 +2,7 @@
 
 mod json;
 mod regex;
-mod xml;
+pub(crate) mod xml;
 
 pub use json::{
     JsonAssertion, JsonAssertionConfig, JsonAssertionError, JsonMatcher, MatchSelection,

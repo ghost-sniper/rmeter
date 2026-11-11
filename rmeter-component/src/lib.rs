@@ -2,10 +2,12 @@
 
 pub mod assertion;
 pub mod component;
+pub mod extractor;
 pub mod http;
 pub mod javascript;
 pub mod jdbc;
 mod post_processor;
+pub use post_processor::HttpPostProcessorConfig;
 
 pub use javascript::{JavaScriptConfig, JavaScriptConfigError, JavaScriptSampler};
 

@@ -354,6 +354,35 @@ impl PostProcessorConfig {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum HttpPostProcessorConfig {
+    Javascript(JavaScriptNodeConfig),
+    JsonpathExtractor(rmeter_component::extractor::ExtractorSettings),
+    XpathExtractor(rmeter_component::extractor::ExtractorSettings),
+    JmespathExtractor(rmeter_component::extractor::ExtractorSettings),
+    RegexExtractor(rmeter_component::extractor::ExtractorSettings),
+    Xpath2Extractor(rmeter_component::extractor::ExtractorSettings),
+}
+impl HttpPostProcessorConfig {
+    fn into_config(self) -> Result<rmeter_component::HttpPostProcessorConfig, ScriptError> {
+        use rmeter_component::extractor::{ExtractorConfig, ExtractorKind as K};
+        let (kind, settings) = match self {
+            Self::Javascript(config) => {
+                return Ok(PostProcessorConfig::Javascript(config)
+                    .into_config()?
+                    .into());
+            }
+            Self::JsonpathExtractor(s) => (K::Jsonpath, s),
+            Self::XpathExtractor(s) => (K::Xpath, s),
+            Self::JmespathExtractor(s) => (K::Jmespath, s),
+            Self::RegexExtractor(s) => (K::Regex, s),
+            Self::Xpath2Extractor(s) => (K::Xpath2, s),
+        };
+        Ok(ExtractorConfig { kind, settings }.into())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum NodeConfig {
     Javascript(JavaScriptNodeConfig),
     #[serde(alias = "jdbc_connection")]
@@ -397,7 +426,7 @@ enum NodeConfig {
         #[serde(default)]
         pre_processors: Vec<Enabled<PostProcessorConfig>>,
         #[serde(default)]
-        post_processors: Vec<Enabled<PostProcessorConfig>>,
+        post_processors: Vec<Enabled<HttpPostProcessorConfig>>,
         max_post_processor_body_bytes: Option<usize>,
     },
     HttpDefaults {
@@ -584,7 +613,7 @@ impl NodeConfig {
                 request.post_processors = post_processors
                     .into_iter()
                     .filter_map(|item| item.0)
-                    .map(PostProcessorConfig::into_config)
+                    .map(HttpPostProcessorConfig::into_config)
                     .collect::<Result<_, _>>()?;
                 if let Some(limit) = max_post_processor_body_bytes {
                     request.max_post_processor_body_bytes = limit;

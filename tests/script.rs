@@ -1100,3 +1100,74 @@ async fn deadline_cancels_preprocessor_before_request_and_sample_event() {
     result.unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn http_extractor_schema_rejects_wrong_scope_and_skips_disabled_drafts() {
+    for kind in [
+        "jsonpath_extractor",
+        "xpath_extractor",
+        "jmespath_extractor",
+        "regex_extractor",
+        "xpath2_extractor",
+    ] {
+        let expression = match kind {
+            "jsonpath_extractor" => "$.id",
+            "jmespath_extractor" => "id",
+            "regex_extractor" => "(.*)",
+            _ => "//*",
+        };
+        let processor =
+            json!({"type":kind,"name":"extract","variable_name":"value","expression":expression});
+        let mut source = json!({"version":1,"name":"extractors","jdbc_connections":[{"name":"db","variable_name":"db","url":"postgresql://localhost/test"}],"groups":[{"name":"g","children":[{"type":"http_request","name":"HTTP","url":"http://localhost/","post_processors":[processor]}]}]});
+        parse_script(&source.to_string()).unwrap();
+        source["groups"][0]["children"][0]["post_processors"][0]["enabled"] = json!(false);
+        source["groups"][0]["children"][0]["post_processors"][0]["expression"] =
+            json!("invalid (((");
+        parse_script(&source.to_string()).unwrap();
+        for parent in [
+            json!({"type":"jdbc_request","name":"SQL","connection":"db","sql":"SELECT 1"}),
+            json!({"type":"javascript","name":"JS","script":""}),
+        ] {
+            source["groups"][0]["children"][0] = parent;
+            source["groups"][0]["children"][0]["post_processors"] = json!([processor]);
+            assert!(parse_script(&source.to_string()).is_err());
+        }
+    }
+}
+#[tokio::test]
+async fn extractor_outputs_feed_next_request_with_user_isolation_and_no_extra_samples() {
+    let (url, source_server) = server(r#"{"token":"abc"}"#, 4).await;
+    let (destination, work_server) = server("ok", 4).await;
+    let source=json!({"version":1,"name":"extractors","groups":[{"name":"g","users":2,"iterations":2,"children":[
+        {"type":"http_request","name":"extract","url":url,"post_processors":[
+            {"type":"jsonpath_extractor","name":"token","variable_name":"token","expression":"$.token"},
+            {"type":"javascript","name":"decorate","timeout_ms":2000,"script":"vars.put('payload', vars.get('token') + ':' + ctx.userIndex + ':' + ctx.iteration);"}
+        ]},
+        {"type":"http_request","name":"use","url":destination,"method":"POST","body":{"type":"text","value":"${payload}"}}
+    ]}]}).to_string();
+    let (sender, mut receiver) = mpsc::channel(1);
+    let (result, count) = tokio::join!(run_script(&source, sender), async {
+        let mut count = 0;
+        while let Some(event) = receiver.recv().await {
+            if let rmeter::RunEvent::SampleCompleted(sample) = event {
+                assert!(
+                    sample.result.success,
+                    "{:?}",
+                    sample.result.response_message
+                );
+                count += 1;
+            }
+        }
+        count
+    });
+    result.unwrap();
+    assert_eq!(count, 8);
+    source_server.await.unwrap();
+    let requests = work_server.await.unwrap();
+    let mut bodies: Vec<_> = requests
+        .iter()
+        .map(|r| r.split_once("\r\n\r\n").unwrap().1)
+        .collect();
+    bodies.sort();
+    assert_eq!(bodies, ["abc:0:0", "abc:0:1", "abc:1:0", "abc:1:1"]);
+}

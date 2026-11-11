@@ -9,8 +9,8 @@ HTTP/HTTPS 采样器、HTTP Request Defaults，以及 JSON、正文正则和 XML
 配置与示例见 [JavaScript 脚本变量](../README.md#javascript-脚本变量)。
 脚本检查和执行依赖单独部署的 `rmeter-js-worker`，构建和库/Tauri 集成方式见
 [worker 部署说明](../README.md#部署-javascript-worker)。
-HTTP/JDBC/JavaScript 配置的 `pre_processors` 与 `post_processors: Vec<JavaScriptConfig>` 可挂载处理器，
-通过只读 `prev` 提取当前返回结果；见 [后置处理器说明](../README.md#javascript-前置与后置处理器)。
+HTTP/JDBC/JavaScript 配置的 `pre_processors` 与 `post_processors` 可挂载处理器，
+JavaScript 通过只读 `prev` 提取当前返回结果；HTTP 后置还支持五种原生响应提取器，见 [后置处理器说明](../README.md#javascript-前置与后置处理器)。
 
 ## 创建采样器
 
