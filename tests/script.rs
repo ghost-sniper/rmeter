@@ -169,6 +169,54 @@ fn parses_group_defaults_and_rejects_bad_schema() {
 }
 
 #[test]
+fn loop_and_http_defaults_accept_optional_display_names_without_changing_execution() {
+    let base = json!({"version":1,"name":"names","groups":[{"name":"g","children":[
+        {"type":"loop","count":2,"children":[
+            {"type":"http_request","name":"request"},
+            {"type":"http_defaults","settings":{"host":"localhost","path":"/named"}}
+        ]}
+    ]}]});
+    for name in [None, Some(json!(null)), Some(json!("订单 / 中文循环"))] {
+        let mut source = base.clone();
+        if let Some(name) = name {
+            source["groups"][0]["children"][0]["name"] = name.clone();
+            source["groups"][0]["children"][0]["children"][1]["name"] = name;
+        }
+        let plan = parse_script(&source.to_string()).unwrap();
+        let mut context = UserContext::new("g", 0);
+        let mut cursor = ExecutionCursor::new(&plan.groups[0].children);
+        let mut samples = 0;
+        let mut done = false;
+        for _ in 0..10 {
+            match cursor.step(&mut context).unwrap() {
+                CursorStep::Sample(sampler) => {
+                    samples += 1;
+                    let config = sampler.as_http().unwrap().config();
+                    assert_eq!(config.label, "request");
+                    assert_eq!(config.settings.host.as_deref(), Some("localhost"));
+                    assert_eq!(config.settings.path.as_deref(), Some("/named"));
+                }
+                CursorStep::Yield => (),
+                CursorStep::Done => {
+                    done = true;
+                    break;
+                }
+            }
+        }
+        assert!(done);
+        assert_eq!(samples, 2);
+    }
+    for invalid in [json!(""), json!("  "), json!(123), json!({})] {
+        let mut source = base.clone();
+        source["groups"][0]["children"][0]["name"] = invalid.clone();
+        assert!(parse_script(&source.to_string()).is_err());
+        let mut source = base.clone();
+        source["groups"][0]["children"][0]["children"][1]["name"] = invalid;
+        assert!(parse_script(&source.to_string()).is_err());
+    }
+}
+
+#[test]
 fn preserves_timeout_inheritance_disable_and_scoped_defaults() {
     let source = json!({"version":1, "name":"defaults", "defaults": {
         "host":"localhost", "request_timeout_ms":100, "connect_timeout_ms":50,

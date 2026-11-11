@@ -335,12 +335,14 @@ enum NodeConfig {
         max_post_processor_body_bytes: Option<usize>,
     },
     HttpDefaults {
+        name: Option<String>,
         settings: DefaultsConfig,
     },
     Sequence {
         children: Vec<NodeConfig>,
     },
     Loop {
+        name: Option<String>,
         count: CountConfig,
         children: Vec<NodeConfig>,
     },
@@ -512,15 +514,26 @@ impl NodeConfig {
                 }
                 ComponentNode::HttpRequest(request)
             }
-            Self::HttpDefaults { settings } => ComponentNode::HttpDefaults(settings.into_config()),
+            Self::HttpDefaults { name, settings } => {
+                if let Some(name) = name {
+                    require_name(&name, "http_defaults")?;
+                }
+                ComponentNode::HttpDefaults(settings.into_config())
+            }
             Self::Sequence { children: nodes } => ComponentNode::Sequence(children(nodes)?),
             Self::Loop {
+                name,
                 count,
                 children: nodes,
-            } => ComponentNode::Loop {
-                count: count.into_count(),
-                children: children(nodes)?,
-            },
+            } => {
+                if let Some(name) = name {
+                    require_name(&name, "loop")?;
+                }
+                ComponentNode::Loop {
+                    count: count.into_count(),
+                    children: children(nodes)?,
+                }
+            }
             Self::Controller {
                 name,
                 children: nodes,

@@ -288,11 +288,11 @@ result?;
 | type | 配置 |
 | --- | --- |
 | `http_request` | `name`；可选 `url`、`method`（默认 GET）、`settings`、`body`、`assertions`、`max_assertion_body_bytes` |
-| `http_defaults` | `settings`：当前层 HTTP 默认配置 |
+| `http_defaults` | `settings`：当前层 HTTP 默认配置；可选 `name` |
 | `jdbc_connection_configuration` | `name`、`variable_name`、`url` 及连接池配置；不产生采样事件 |
 | `jdbc_request` | `name`、`connection`、`sql`；可选查询类型、参数、结果限制和断言 |
 | `sequence` | `children`：按顺序执行 |
-| `loop` | `count`（非负整数或 `"infinite"`）、`children` |
+| `loop` | `count`（非负整数或 `"infinite"`）、`children`；可选 `name` |
 | `controller` | `name`、`children`：通用顺序控制器 |
 | `if` | `name`、`condition`、`children`；可选 `evaluate_all`，默认 false |
 | `while` | `name`、`condition`、`children` |
@@ -303,6 +303,8 @@ result?;
 Headers/Query 是二元字符串数组，例如 `[["Accept", "application/json"]]`，
 可保留重复键。超时字段缺省表示继承，显式 null 表示禁用，整数表示毫秒。
 Defaults 作用于同层及后代；子作用域不泄漏。同层多个 Defaults 后者覆盖前者。
+Loop 与 HTTP 默认配置的 `name` 用于脚本编辑器展示，不影响循环执行或配置作用域，
+也不产生额外采样。为兼容旧脚本，允许缺省或 `null`；显式字符串名称不可为空白。
 采样器显式设置的字段覆盖默认值，未设置的字段继续继承。采样器的
 `headers`、`query` 一旦设置数组就整组替换默认列表（保留重复键和顺序），
 `[]` 清空该列表；缺省或 `null` 继承。Defaults 组件之间仍按键合并列表。
