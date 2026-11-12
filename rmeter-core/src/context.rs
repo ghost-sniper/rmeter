@@ -5,6 +5,8 @@ use std::collections::HashMap;
 /// Mutable state belonging to one virtual user, retained across its iterations.
 #[derive(Debug)]
 pub struct UserContext {
+    /// Locale and timezone captured at run start; shared with all function entry points.
+    pub function_environment: rmeter_function::Environment,
     /// Group name attached to sample events.
     pub group_name: String,
     /// Zero-based virtual-user index within the group.
@@ -22,6 +24,7 @@ impl UserContext {
     /// Create an empty context at iteration zero with `last_sample_ok = true`.
     pub fn new(group_name: impl Into<String>, user_index: usize) -> Self {
         Self {
+            function_environment: rmeter_function::Environment::default(),
             group_name: group_name.into(),
             user_index,
             iteration: 0,

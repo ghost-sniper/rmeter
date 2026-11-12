@@ -55,3 +55,7 @@ Compilez le worker dans cet espace de travail et déployez l’exécutable de m�
 ```sh
 cargo build -p rmeter-component --release --bin rmeter-js-worker
 ```
+
+## Fonctions natives
+
+RandomString, changeCase, dateTimeConvert, Random et RandomDate sont partagées entre Rust, JavaScript (`functions`) et les expressions `${__function(...)}`. Les formats de date suivent les règles ISO/SMART du JDK 21 avec des données locales et de fuseaux intégrées, sans Java à l’exécution. Les valeurs système sont figées au début de chaque exécution. Les appels invalides échouent explicitement. Le nom de variable facultatif enregistre le résultat pour l’utilisateur courant ; un échec annule les écritures de l’expression. Le code JavaScript n’est jamais interpolé. L’évaluation des contrôleurs reçoit désormais un UserContext mutable pour écrire les variables.

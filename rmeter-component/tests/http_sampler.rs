@@ -28,6 +28,50 @@ struct Response {
 }
 
 #[tokio::test]
+async fn function_expressions_reach_http_fields_and_write_user_variables() {
+    let (base, task) = server(vec![Response::new("200 OK", b"ok")]).await;
+    let mut config = HttpRequestConfig::with_url(
+        "${__changeCase(request,UPPER,label)}",
+        format!("{base}/${{__Random(7,7,id)}}"),
+    );
+    config.method = HttpMethod::POST;
+    config.settings.headers = Some(vec![("X-Id".into(), "${id}".into())]);
+    config.settings.query = Some(vec![(
+        "date".into(),
+        "${__dateTimeConvert(2024-02-29,yyyy-MM-dd,yyyyMMdd,date)}".into(),
+    )]);
+    config.body = HttpBody::Json(serde_json::json!({"id":"${id}","date":"${date}"}));
+    let mut pre = rmeter_component::JavaScriptConfig::new(
+        "pre",
+        "functions.changeCase('ready','UPPER','pre');",
+    );
+    pre.timeout = Duration::from_secs(5);
+    config.pre_processors.push(pre);
+    let mut post = rmeter_component::JavaScriptConfig::new(
+        "post",
+        "if (vars.get('pre') !== 'READY' || prev.getResponseDataAsString() !== 'ok') throw Error('HTTP'); functions.dateTimeConvert(vars.get('date'),'yyyyMMdd','dd/MM/yyyy','post');",
+    );
+    post.timeout = Duration::from_secs(5);
+    config.post_processors.push(post.into());
+    let mut user = context();
+    let result = HttpSampler::new(config)
+        .unwrap()
+        .sample(&mut user)
+        .await
+        .unwrap();
+    assert!(result.success, "{:?}", result.response_message);
+    assert_eq!(result.label, "REQUEST");
+    assert_eq!(user.variables["date"], "20240229");
+    assert_eq!(user.variables["post"], "29/02/2024");
+    let observed = task.await.unwrap();
+    assert_eq!(observed[0].header("X-Id"), Some("7"));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&observed[0].body).unwrap(),
+        serde_json::json!({"id":"7","date":"20240229"})
+    );
+}
+
+#[tokio::test]
 async fn independent_components_keep_order_and_use_complete_http_body() {
     let payload = b"<root><code>0</code></root>";
     for save in [false, true] {

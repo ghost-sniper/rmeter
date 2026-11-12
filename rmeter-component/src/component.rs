@@ -237,6 +237,9 @@ impl ComponentCompiler {
                     evaluate_all,
                     children,
                 } => {
+                    condition
+                        .validate()
+                        .map_err(|e| ComponentConfigError(e.to_string()))?;
                     let mut controller = IfController::new(
                         name,
                         condition,
@@ -249,11 +252,16 @@ impl ComponentCompiler {
                     name,
                     condition,
                     children,
-                } => Node::While(WhileController::new(
-                    name,
-                    condition,
-                    self.scope(children, &defaults, &connections, &timers)?,
-                )),
+                } => {
+                    condition
+                        .validate()
+                        .map_err(|e| ComponentConfigError(e.to_string()))?;
+                    Node::While(WhileController::new(
+                        name,
+                        condition,
+                        self.scope(children, &defaults, &connections, &timers)?,
+                    ))
+                }
             });
         }
         Ok(compiled)

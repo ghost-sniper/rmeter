@@ -13,6 +13,7 @@ pub use rmeter_component::{
 };
 pub use rmeter_core as core;
 pub use rmeter_core::{engine::Engine, event::RunEvent, plan::TestPlan};
+pub use rmeter_function as function;
 pub use script::{ScriptError, load_script, parse_script};
 
 /// Parse and run JSON with the caller's async runtime. Consume events concurrently.

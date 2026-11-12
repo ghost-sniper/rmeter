@@ -101,6 +101,7 @@ impl JavaScriptSampler {
                 config: config.clone(),
                 variables: HashMap::new(),
                 metadata: serde_json::json!({}),
+                function_environment: rmeter_function::Environment::default(),
                 previous: None,
                 check_only: true,
                 extractor: None,
@@ -132,6 +133,7 @@ impl JavaScriptSampler {
     ) -> Result<(), (&'static str, String)> {
         let config = self.config.clone();
         let variables = user.variables.clone();
+        let function_environment = user.function_environment.clone();
         let metadata = serde_json::json!({
             "groupName": user.group_name, "userIndex": user.user_index,
             "iteration": user.iteration, "lastSampleOk": user.last_sample_ok,
@@ -145,6 +147,7 @@ impl JavaScriptSampler {
                     config,
                     variables,
                     metadata,
+                    function_environment,
                     previous,
                     check_only: false,
                     extractor: None,
@@ -226,6 +229,8 @@ type ExecutionResult = Result<HashMap<String, String>, (&'static str, String)>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Request {
+    #[serde(default)]
+    function_environment: rmeter_function::Environment,
     config: Arc<JavaScriptConfig>,
     variables: HashMap<String, String>,
     metadata: serde_json::Value,
@@ -333,6 +338,7 @@ pub(crate) fn check_extractor(
             config: Arc::new(crate::extractor::worker_config(&extractor)),
             variables: HashMap::new(),
             metadata: serde_json::json!({}),
+            function_environment: rmeter_function::Environment::default(),
             previous: None,
             check_only: true,
             extractor: Some(extractor),
@@ -351,6 +357,7 @@ pub(crate) async fn run_extractor(
         config: Arc::new(crate::extractor::worker_config(&extractor)),
         variables: user.variables.clone(),
         metadata: serde_json::json!({}),
+        function_environment: rmeter_function::Environment::default(),
         previous: Some(Arc::new(serde_json::Value::String(body.into()))),
         check_only: false,
         extractor: Some((*extractor).clone()),

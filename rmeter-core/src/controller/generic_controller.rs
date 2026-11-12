@@ -23,13 +23,13 @@ impl<S> GenericController<S> {
 /// Hooks are pure; state belongs to the user's execution cursor, not the plan.
 pub trait Controller<S> {
     fn generic(&self) -> &GenericController<S>;
-    fn should_enter(&self, _context: &UserContext) -> Result<bool, ConditionError> {
+    fn should_enter(&self, _context: &mut UserContext) -> Result<bool, ConditionError> {
         Ok(true)
     }
-    fn should_repeat(&self, _context: &UserContext) -> Result<bool, ConditionError> {
+    fn should_repeat(&self, _context: &mut UserContext) -> Result<bool, ConditionError> {
         Ok(false)
     }
-    fn before_sample(&self, _context: &UserContext) -> Result<bool, ConditionError> {
+    fn before_sample(&self, _context: &mut UserContext) -> Result<bool, ConditionError> {
         Ok(true)
     }
 }

@@ -44,3 +44,7 @@ IF 表达式仅将忽略大小写的 `true` 视为真。While 字符串条件在
 - [`context`](crate::context)：用户变量和有界脚本日志。
 - [`controller`](crate::controller)：顺序、IF、While 和遍历。
 - [`engine`](crate::engine) / [`event`](crate::event)：并发执行与事件。
+
+## 原生函数
+
+RandomString、changeCase、dateTimeConvert、Random、RandomDate 由 Rust、JavaScript 的 `functions` 对象和 `${__函数(...)}` 表达式共用。日期模式采用 JDK 21 ISO/SMART 规则，地区和时区数据内置，运行时不需要 Java。默认时区和语言在运行开始时从系统读取。非法调用明确报错；可选变量名将结果写入当前用户，表达式失败时回滚其写入。JavaScript 源码不进行表达式替换。控制器求值接口现接收可变 UserContext，以支持函数写变量。

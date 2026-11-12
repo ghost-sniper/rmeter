@@ -126,6 +126,7 @@ pub(super) fn execute(
         config,
         variables,
         metadata,
+        function_environment,
         previous,
         check_only,
         extractor: _,
@@ -181,6 +182,43 @@ pub(super) fn execute(
             vars.set("getIteration", Function::new(ctx.clone(), move || iteration)?)?;
             let vars: Object = freeze.call((vars,))?;
             globals.prop("vars", vars)?;
+            let invoke = Function::new(ctx.clone(), move |ctx: Ctx<'_>, name: String, args: Vec<String>| -> rquickjs::Result<String> {
+                rmeter_function::invoke(&name, &args, &mut rmeter_function::FunctionContext {
+                    variables: &mut HashMap::new(),
+                    environment: &function_environment,
+                    source: &mut rmeter_function::SystemSource,
+                }).map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+            })?;
+            let bind: Function = ctx.eval(r#"(invoke, put) => {
+                const functions = {};
+                for (const [name, min, max, target, integers] of [
+                    ['RandomString',1,3,2,[0]], ['changeCase',1,3,2,[]],
+                    ['dateTimeConvert',3,4,3,[]], ['Random',2,3,2,[0,1]],
+                    ['RandomDate',3,5,4,[]]
+                ]) {
+                    functions[name] = (...args) => {
+                        if (args.length < min || args.length > max) throw new TypeError(name + ': invalid argument count');
+                        args = args.map((value, i) => {
+                            if (value === undefined && i >= min) return '';
+                            if (integers.includes(i) && typeof value === 'number') {
+                                if (!Number.isSafeInteger(value)) throw new RangeError(name + ': use a decimal string for integers outside the safe Number range');
+                                return String(value);
+                            }
+                            if (typeof value !== 'string') throw new TypeError(name + ': expected string');
+                            return value;
+                        });
+                        const result = invoke(name, args);
+                        const variable = (args[target] || '').trim();
+                        if (variable) put(variable, result);
+                        return result;
+                    };
+                }
+                return Object.freeze(functions);
+            }"#)?;
+            let vars: Object = globals.get("vars")?;
+            let put: Function = vars.get("put")?;
+            let functions: Object = bind.call((invoke, put))?;
+            globals.prop("functions", functions)?;
             let info = ctx.json_parse(metadata.to_string())?;
             let decorate: Function = ctx.eval("(c) => { c.getThreadNum = () => c.userIndex; c.getVariables = () => vars; return Object.freeze(c); }")?;
             let info: Object = decorate.call((info,))?;

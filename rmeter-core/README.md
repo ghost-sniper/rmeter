@@ -72,7 +72,7 @@ assert_eq!(executed, vec!["if", "while"]);
 `evaluate_all = true` 在每次获取采样器时重新检查，包含嵌套控制器中的采样器；变为 false 时放弃当前剩余子树。
 
 `Condition::Expression`（也可直接传字符串）支持 `${variable}`，展开后只有忽略大小写的 `true` 成立。
-不执行 JavaScript、Groovy 或 `${__function(...)}`。
+不执行 JavaScript 或 Groovy；支持 `rmeter-function` 提供的 `${__function(...)}` 表达式。
 
 ### While
 

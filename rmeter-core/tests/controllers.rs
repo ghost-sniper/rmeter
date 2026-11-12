@@ -48,22 +48,22 @@ fn conditions_read_context_short_circuit_and_report_invalid_values() {
     context.variables.insert("enabled".into(), "TRUE".into());
     assert!(
         Condition::VariableBool("enabled".into())
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     assert!(
         Condition::from("${JMeterThread.last_sample_ok}")
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
-    assert!(!Condition::from("not true").evaluate(&context).unwrap());
+    assert!(!Condition::from("not true").evaluate(&mut context).unwrap());
     assert!(
         compare(
             Operand::Iteration,
             CompareOperator::Greater,
             "18446744073709551614"
         )
-        .evaluate(&context)
+        .evaluate(&mut context)
         .unwrap()
     );
     assert!(
@@ -72,59 +72,59 @@ fn conditions_read_context_short_circuit_and_report_invalid_values() {
             CompareOperator::Equal,
             "18446744073709551615"
         )
-        .evaluate(&context)
+        .evaluate(&mut context)
         .unwrap()
     );
     assert!(
         compare(Operand::Literal("-1".into()), CompareOperator::Less, "0")
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     assert!(
         compare(Operand::UserIndex, CompareOperator::LessOrEqual, "0")
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     assert!(
         compare(Operand::UserIndex, CompareOperator::GreaterOrEqual, "0")
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     assert!(
         compare(Operand::LastSampleOk, CompareOperator::NotEqual, "false")
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     let missing = Condition::VariableBool("missing".into());
     assert!(
         Condition::Any(vec![true.into(), missing.clone()])
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     assert!(
         !Condition::All(vec![false.into(), missing.clone()])
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
     assert!(
         Condition::Not(Box::new(false.into()))
-            .evaluate(&context)
+            .evaluate(&mut context)
             .unwrap()
     );
-    assert!(missing.evaluate(&context).is_err());
+    assert!(missing.evaluate(&mut context).is_err());
     assert!(
         compare(Operand::Literal("text".into()), CompareOperator::Less, "1")
-            .evaluate(&context)
+            .evaluate(&mut context)
             .is_err()
     );
     context.variables.insert("enabled".into(), "maybe".into());
     assert!(
         Condition::VariableBool("enabled".into())
-            .evaluate(&context)
+            .evaluate(&mut context)
             .is_err()
     );
-    assert!(Condition::from("${broken").evaluate(&context).is_err());
-    assert!(Condition::from("${}").evaluate(&context).is_err());
+    assert!(Condition::from("${broken").evaluate(&mut context).is_err());
+    assert!(Condition::from("${}").evaluate(&mut context).is_err());
 }
 
 #[test]
@@ -631,4 +631,34 @@ async fn receiver_closure_interrupts_condition_only_infinite_while() {
         .unwrap()
         .unwrap();
     assert!(matches!(result, Err(EngineError::EventsClosed)));
+}
+#[test]
+fn functions_in_conditions_write_variables_and_short_circuit() {
+    let mut context = UserContext::new("functions", 0);
+    assert!(
+        Condition::from("${__changeCase(TRUE,lower,flag)}")
+            .evaluate(&mut context)
+            .unwrap()
+    );
+    assert_eq!(context.variables["flag"], "true");
+    let condition = Condition::Any(vec![
+        Condition::Constant(true),
+        Condition::from("${__Random(1,1,unreached)}"),
+    ]);
+    assert!(condition.evaluate(&mut context).unwrap());
+    assert!(!context.variables.contains_key("unreached"));
+    assert!(
+        Condition::from("${__changeCase(TRUE,lower,rolledBack)}${missing}")
+            .evaluate(&mut context)
+            .is_err()
+    );
+    assert!(!context.variables.contains_key("rolledBack"));
+    context.variables.insert("iteration".into(), "999".into());
+    assert!(
+        Condition::from("${__changeCase(${iteration},lower,captured)}")
+            .evaluate(&mut context)
+            .is_ok()
+    );
+    assert_eq!(context.variables["captured"], "0");
+    assert_eq!(context.variables["iteration"], "999");
 }

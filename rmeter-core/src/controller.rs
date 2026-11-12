@@ -79,7 +79,7 @@ impl<S> ControllerKind<'_, S> {
         }
     }
 
-    fn enter(&self, context: &UserContext) -> Result<bool, ControllerError> {
+    fn enter(&self, context: &mut UserContext) -> Result<bool, ControllerError> {
         self.wrap(match self {
             Self::Generic(controller) => controller.should_enter(context),
             Self::If(controller) => controller.should_enter(context),
@@ -88,7 +88,7 @@ impl<S> ControllerKind<'_, S> {
         })
     }
 
-    fn repeat(&self, iteration: u64, context: &UserContext) -> Result<bool, ControllerError> {
+    fn repeat(&self, iteration: u64, context: &mut UserContext) -> Result<bool, ControllerError> {
         self.wrap(match self {
             Self::Loop(LoopCount::Infinite) => Ok(true),
             Self::Loop(LoopCount::Finite(count)) => Ok(iteration < count.saturating_sub(1)),
@@ -99,7 +99,7 @@ impl<S> ControllerKind<'_, S> {
         })
     }
 
-    fn before_sample(&self, context: &UserContext) -> Result<bool, ControllerError> {
+    fn before_sample(&self, context: &mut UserContext) -> Result<bool, ControllerError> {
         self.wrap(match self {
             Self::If(controller) => controller.before_sample(context),
             _ => Ok(true),
@@ -158,7 +158,7 @@ impl<'a, S> ExecutionCursor<'a, S> {
         self.has_work
     }
 
-    fn check_if_gates(&mut self, context: &UserContext) -> Result<bool, ControllerError> {
+    fn check_if_gates(&mut self, context: &mut UserContext) -> Result<bool, ControllerError> {
         for (index, frame) in self.stack.iter().enumerate() {
             if !frame.state.first && !frame.kind.before_sample(context)? {
                 // Preserve the parent, whose child pointer already advanced, and

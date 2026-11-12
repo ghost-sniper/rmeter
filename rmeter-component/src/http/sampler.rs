@@ -156,15 +156,12 @@ impl HttpSampler {
         // Validate static requests before running. Values depending on user variables
         // are validated on each sample after expansion instead.
         if !has_variables {
-            sampler.build_request(&HashMap::new())?;
+            sampler.build_request(&mut UserContext::new("validation", 0))?;
         }
         Ok(sampler)
     }
 
-    fn build_request(
-        &self,
-        variables: &HashMap<String, String>,
-    ) -> Result<Request, HttpConfigError> {
+    fn build_request(&self, variables: &mut UserContext) -> Result<Request, HttpConfigError> {
         let settings = &self.config.settings;
         let url = build_url(&self.config, variables)?;
         let mut builder = self.client.request(self.config.method.clone(), url);
@@ -291,14 +288,14 @@ impl Sampler for HttpSampler {
         }
         let started = Instant::now();
         result.started_at = SystemTime::now();
-        match template::expand(&self.config.label, &context.variables) {
+        match template::expand(&self.config.label, context) {
             Ok(label) => result.label = label,
             Err(error) => {
                 result.response_message = Some(format!("InvalidConfig: {error}"));
                 return Ok(self.failed_before_response(result, started, context).await);
             }
         }
-        let request = match self.build_request(&context.variables) {
+        let request = match self.build_request(context) {
             Ok(request) => request,
             Err(error) => {
                 result.response_message = Some(format!("InvalidConfig: {error}"));
@@ -428,7 +425,7 @@ fn describe_error(error: reqwest::Error) -> String {
 
 fn expand_pairs(
     entries: &[(String, String)],
-    variables: &HashMap<String, String>,
+    variables: &mut UserContext,
 ) -> Result<Vec<(String, String)>, HttpConfigError> {
     entries
         .iter()
@@ -443,7 +440,7 @@ fn expand_pairs(
 
 fn build_url(
     config: &HttpRequestConfig,
-    variables: &HashMap<String, String>,
+    variables: &mut UserContext,
 ) -> Result<Url, HttpConfigError> {
     let mut url = if let Some(url) = &config.url {
         Url::parse(&template::expand(url, variables)?)

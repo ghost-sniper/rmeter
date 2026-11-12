@@ -87,6 +87,7 @@ impl<S: Sampler + 'static> Engine<S> {
     /// User and iteration indices are zero-based. Each call starts a fresh run.
     /// Dropping this future aborts its user tasks; StopTest cancels all groups.
     pub async fn run(&self, events: mpsc::Sender<RunEvent>) -> Result<(), EngineError> {
+        let function_environment = rmeter_function::Environment::default();
         let started = Instant::now();
         let schedules = self
             .plan
@@ -126,10 +127,10 @@ impl<S: Sampler + 'static> Engine<S> {
                     Arc::clone(&self.plan),
                     group_index,
                     user_index,
-                    started + delay,
-                    deadline,
+                    (started + delay, deadline),
                     events.clone(),
                     stop.clone(),
+                    function_environment.clone(),
                 ));
             }
         }
@@ -164,11 +165,12 @@ async fn run_user<S: Sampler>(
     plan: Arc<TestPlan<S>>,
     group_index: usize,
     user_index: usize,
-    start_at: Instant,
-    deadline: Option<Instant>,
+    schedule: (Instant, Option<Instant>),
     events: mpsc::Sender<RunEvent>,
     stop: watch::Sender<bool>,
+    function_environment: rmeter_function::Environment,
 ) -> Result<(), EngineError> {
+    let (start_at, deadline) = schedule;
     let mut cancelled = stop.subscribe();
     if *cancelled.borrow() {
         return Ok(());
@@ -183,7 +185,7 @@ async fn run_user<S: Sampler>(
         _ = wait_for_deadline(deadline) => Ok(()),
         result = async {
             sleep_until(start_at).await;
-            execute_user(&plan, group_index, user_index, &events, &stop).await
+            execute_user(&plan, group_index, user_index, &events, &stop, function_environment).await
         } => result,
     }
 }
@@ -201,9 +203,11 @@ async fn execute_user<S: Sampler>(
     user_index: usize,
     events: &mpsc::Sender<RunEvent>,
     stop: &watch::Sender<bool>,
+    function_environment: rmeter_function::Environment,
 ) -> Result<(), EngineError> {
     let group = &plan.groups[group_index];
     let mut context = UserContext::new(&group.name, user_index);
+    context.function_environment = function_environment;
     context.variables.clone_from(&plan.variables);
     let mut cursor = ExecutionCursor::new(&group.children);
     let mut remaining = group.iterations;

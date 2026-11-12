@@ -1,7 +1,7 @@
 //! Scoped, cancellable pauses between preprocessors and sampler execution.
 use rmeter_core::{context::UserContext, sampler::SampleResult};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 // Preserve integer milliseconds across native JSON and desktop JavaScript.
 const MAX_MS: f64 = 9_007_199_254_740_991.0;
@@ -19,7 +19,7 @@ impl From<u32> for TimerValue {
     }
 }
 impl TimerValue {
-    fn resolve(&self, variables: &HashMap<String, String>, integer: bool) -> Result<f64, String> {
+    fn resolve(&self, variables: &mut UserContext, integer: bool) -> Result<f64, String> {
         let number = match self {
             Self::Number(number) => *number,
             Self::Expression(text) => crate::http::template::expand(text, variables)
@@ -46,7 +46,8 @@ impl TimerValue {
                 return Ok(());
             }
         }
-        self.resolve(&HashMap::new(), integer).map(|_| ())
+        self.resolve(&mut UserContext::new("timer", 0), integer)
+            .map(|_| ())
     }
 }
 
@@ -88,7 +89,7 @@ impl TimerConfig {
         };
         result.map_err(|e| format!("timer {:?}: {e}", self.name()))
     }
-    fn delay(&self, variables: &HashMap<String, String>) -> Result<u64, String> {
+    fn delay(&self, variables: &mut UserContext) -> Result<u64, String> {
         match self {
             Self::ConstantTimer { delay_ms, .. } => Ok(delay_ms.resolve(variables, true)? as u64),
             Self::GaussianRandomTimer {
@@ -113,10 +114,10 @@ fn gaussian_delay(z: f64, deviation: f64, offset: f64) -> u64 {
 pub(crate) fn validate(timers: &[TimerConfig]) -> Result<(), String> {
     timers.iter().try_for_each(TimerConfig::validate)
 }
-async fn pause(timers: &[TimerConfig], user: &UserContext) -> Result<(), String> {
+async fn pause(timers: &[TimerConfig], user: &mut UserContext) -> Result<(), String> {
     let total = timers.iter().try_fold(0u64, |sum, timer| {
         let delay = timer
-            .delay(&user.variables)
+            .delay(user)
             .map_err(|e| format!("timer {:?}: {e}", timer.name()))?;
         sum.checked_add(delay)
             .ok_or_else(|| "total timer delay overflow".to_owned())
@@ -133,7 +134,7 @@ async fn pause(timers: &[TimerConfig], user: &UserContext) -> Result<(), String>
 }
 pub(crate) async fn run(
     timers: &[TimerConfig],
-    user: &UserContext,
+    user: &mut UserContext,
     result: &mut SampleResult,
 ) -> bool {
     match pause(timers, user).await {
@@ -151,6 +152,24 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn timer_functions_write_results_and_use_previous_function_values() {
+        let mut user = UserContext::new("functions", 0);
+        let timers = [
+            TimerConfig::ConstantTimer {
+                name: "a".into(),
+                delay_ms: TimerValue::Expression("${__Random(12,12,delay)}".into()),
+            },
+            TimerConfig::ConstantTimer {
+                name: "b".into(),
+                delay_ms: TimerValue::Expression("${delay}".into()),
+            },
+        ];
+        let started = tokio::time::Instant::now();
+        pause(&timers, &mut user).await.unwrap();
+        assert_eq!(started.elapsed(), Duration::from_millis(24));
+        assert_eq!(user.variables["delay"], "12");
+    }
     #[test]
     fn gaussian_matches_jmeter_abs_and_truncation() {
         assert_eq!(gaussian_delay(-2.0, 100.0, 50.0), 150);
@@ -165,7 +184,7 @@ mod tests {
             offset_ms: 0.into(),
         };
         let values: Vec<_> = (0..20000)
-            .map(|_| config.delay(&HashMap::new()).unwrap())
+            .map(|_| config.delay(&mut UserContext::new("timer", 0)).unwrap())
             .collect();
         let mean = values.iter().sum::<u64>() as f64 / values.len() as f64;
         assert!((750.0..850.0).contains(&mean), "half-normal mean: {mean}");
@@ -185,24 +204,24 @@ mod tests {
                 offset_ms: 60.into(),
             },
         ];
-        let a = UserContext::new("g", 0);
-        let b = UserContext::new("g", 1);
+        let mut a = UserContext::new("g", 0);
+        let mut b = UserContext::new("g", 1);
         let started = tokio::time::Instant::now();
-        let (a, b) = tokio::join!(pause(&timers, &a), pause(&timers, &b));
+        let (a, b) = tokio::join!(pause(&timers, &mut a), pause(&timers, &mut b));
         a.unwrap();
         b.unwrap();
         assert_eq!(started.elapsed(), Duration::from_millis(100));
     }
     #[tokio::test(start_paused = true)]
     async fn zero_delay_and_invalid_values_do_not_wait() {
-        let user = UserContext::new("g", 0);
+        let mut user = UserContext::new("g", 0);
         let started = tokio::time::Instant::now();
         pause(
             &[TimerConfig::ConstantTimer {
                 name: "zero".into(),
                 delay_ms: 0.into(),
             }],
-            &user,
+            &mut user,
         )
         .await
         .unwrap();
@@ -213,7 +232,7 @@ mod tests {
                     name: "bad".into(),
                     delay_ms: TimerValue::Expression("${missing}".into())
                 }],
-                &user
+                &mut user
             )
             .await
             .is_err()

@@ -235,3 +235,7 @@ let nodes = compile_http_nodes(vec![
 ### 定时器
 
 `TimerConfig::{ConstantTimer, GaussianRandomTimer}` 和 `TimerValue::{Number, Expression}` 配置可取消的等待。可加入采样器配置的 `timers`，或使用 `ComponentNode::Timer` 声明作用域定时器；`ComponentCompiler::register_timer` 添加全局定时器。多个延迟在前置处理器之后累加等待，不计入响应耗时、不产生独立采样。高斯计算取正态随机数乘偏差加偏移的绝对值，再截去小数。变量在运行时读取当前用户，非法值会在请求或脚本执行前使父采样失败。
+
+## 原生函数
+
+JavaScript 采样器及前后置处理器统一提供 `functions.RandomString/changeCase/dateTimeConvert/Random/RandomDate`。HTTP、JDBC 和定时器已有变量字段支持 `${__函数(...)}`；用法、资源限制与 Java 日期兼容规则见 [rmeter-function](../rmeter-function/README.md)。

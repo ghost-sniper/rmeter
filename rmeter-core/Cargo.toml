@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rmeter-function = { path = "../rmeter-function" }
 serde = {workspace = true}
 tokio = {workspace = true}
 

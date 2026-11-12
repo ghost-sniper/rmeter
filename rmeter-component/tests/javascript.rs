@@ -9,6 +9,59 @@ fn config(script: &str) -> JavaScriptConfig {
 }
 
 #[tokio::test]
+async fn native_functions_in_sampler_pre_and_post_processors() {
+    let mut definition = config(
+        r#"
+        if (vars.get('before') !== '29/02/2024') throw Error('pre');
+        if (functions.Random('9223372036854775807','9223372036854775807') !== '9223372036854775807') throw Error('integer precision');
+        functions.RandomString(16, 'a中😀', 'token');
+        if (vars.get('token').length !== 16) throw Error('UTF16');
+        if (functions.changeCase('straße', 'upper') !== 'STRASSE') throw Error('case');
+        functions.RandomDate('', '2024-02-29', '2024-03-01', '', 'randomDate');
+        if (vars.get('randomDate') !== '2024-02-29') throw Error('date range');
+        if (!Object.isFrozen(functions)) throw Error('mutable API');
+    "#,
+    );
+    definition.pre_processors.push(config(
+        "functions.dateTimeConvert('2024-02-29','yyyy-MM-dd','dd/MM/yyyy','before');",
+    ));
+    definition.post_processors.push(config("functions.changeCase('done','UPPER','after'); if (!prev.isSuccessful()) throw Error('sample');"));
+    let sampler = JavaScriptSampler::new(definition).unwrap();
+    let mut user = UserContext::new("functions", 0);
+    let result = sampler.sample(&mut user).await.unwrap();
+    assert!(result.success, "{:?}", result.response_message);
+    assert_eq!(user.variables["after"], "DONE");
+}
+
+#[tokio::test]
+async fn native_function_errors_and_variable_quota_are_transactional() {
+    for source in [
+        "functions.Random(9007199254740992,9007199254740992);",
+        "functions.Random('2','1');",
+        "functions.RandomString(-1);",
+        "functions.RandomString(262145);",
+        "functions.changeCase('a','UNKNOWN');",
+        "functions.dateTimeConvert('bad','yyyy-MM-dd','yyyy');",
+        "functions.RandomDate('','2024-01-01','2024-01-01');",
+        "functions.Random(null,1);",
+        "try { functions.RandomString(100,'x','large'); } catch(e) {}",
+    ] {
+        let mut definition = config(&format!("vars.put('transient','x');{source}"));
+        definition.max_variable_bytes = 64;
+        let mut user = UserContext::new("functions", 0);
+        user.variables.insert("old".into(), "keep".into());
+        let original = user.variables.clone();
+        let result = JavaScriptSampler::new(definition)
+            .unwrap()
+            .sample(&mut user)
+            .await
+            .unwrap();
+        assert!(!result.success, "{source}");
+        assert_eq!(user.variables, original);
+    }
+}
+
+#[tokio::test]
 async fn es6_variables_are_isolated_persistent_and_never_interpolated() {
     let sampler = JavaScriptSampler::new(config(
         r#"

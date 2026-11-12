@@ -127,7 +127,7 @@ impl JdbcSampler {
         &self,
         parameters: &[Parameter],
         sql: &str,
-        variables: &std::collections::HashMap<String, String>,
+        variables: &mut UserContext,
     ) -> Result<Payload, Failure> {
         let (pool, tls) = self
             .connection
@@ -275,9 +275,9 @@ impl Sampler for JdbcSampler {
         }
         let started = Instant::now();
         result.started_at = SystemTime::now();
-        let expand = || -> Result<(String, String, Vec<Parameter>), Failure> {
-            let expand = |text: &str| {
-                template::expand(text, &context.variables).map_err(|e| Failure::config(e.message))
+        let mut expand = || -> Result<(String, String, Vec<Parameter>), Failure> {
+            let mut expand = |text: &str| {
+                template::expand(text, context).map_err(|e| Failure::config(e.message))
             };
             let label = expand(&self.config.label)?;
             let sql = expand(&self.config.sql)?;
@@ -289,7 +289,7 @@ impl Sampler for JdbcSampler {
                 .parameters
                 .iter()
                 .map(|p| {
-                    template::expand_json(p, &context.variables)
+                    template::expand_json(p, context)
                         .map(Parameter::new)
                         .map_err(|e| Failure::config(e.message))
                 })
@@ -307,7 +307,7 @@ impl Sampler for JdbcSampler {
                     sql.len() as u64 + parameters.iter().map(|p| p.len() as u64).sum::<u64>();
                 tokio::time::timeout(
                     self.config.query_timeout,
-                    self.execute(&parameters, &sql, &context.variables),
+                    self.execute(&parameters, &sql, context),
                 )
                 .await
                 .unwrap_or_else(|_| Err(Failure("TIMEOUT".into(), "JDBC sample timed out".into())))

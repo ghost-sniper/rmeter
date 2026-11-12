@@ -32,6 +32,48 @@ fn real_connection() -> Arc<JdbcConnection> {
     )
 }
 
+#[tokio::test]
+#[ignore = "requires RMETER_POSTGRES_URL; read-only SELECT"]
+async fn functions_in_jdbc_and_processors_share_variables() {
+    let mut config = JdbcSamplerConfig::new(
+        "${__changeCase(query,UPPER,label)}",
+        "db",
+        "SELECT ${__Random(7,7,id)}::int AS id, $1::text AS day",
+    );
+    config.parameters = vec![json!(
+        "${__dateTimeConvert(${inputDate},yyyy-MM-dd,yyyyMMdd,day)}"
+    )];
+    config.result_variable = Some("rows".into());
+    let mut pre = rmeter_component::JavaScriptConfig::new(
+        "pre",
+        "functions.RandomDate('','2024-02-29','2024-03-01','','inputDate');",
+    );
+    pre.timeout = Duration::from_secs(5);
+    config.pre_processors.push(pre);
+    let mut post = rmeter_component::JavaScriptConfig::new(
+        "post",
+        "if (vars.get('day') !== '20240229') throw Error('day'); functions.changeCase('ok','UPPER','after');",
+    );
+    post.timeout = Duration::from_secs(5);
+    config.post_processors.push(post);
+    let connection = connection("${__RandomString(0,,connectionReady)}${connectionUrl}");
+    let sampler = JdbcSampler::new(config, connection).unwrap();
+    let mut user = UserContext::new("functions", 0);
+    user.variables.insert(
+        "connectionUrl".into(),
+        std::env::var("RMETER_POSTGRES_URL").unwrap(),
+    );
+    let result = sampler.sample(&mut user).await.unwrap();
+    assert!(result.success, "{:?}", result.response_message);
+    assert_eq!(result.label, "QUERY");
+    assert_eq!(user.variables["after"], "OK");
+    assert_eq!(user.variables["connectionReady"], "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&user.variables["rows"]).unwrap(),
+        json!([{"id":7,"day":"20240229"}])
+    );
+}
+
 #[test]
 fn validates_connection_and_sampler_settings_without_connecting() {
     for url in [

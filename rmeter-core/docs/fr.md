@@ -44,3 +44,7 @@ Les expressions IF n’acceptent que `true`, sans distinction de casse. Les cond
 - [`context`](crate::context) : variables utilisateur et journaux bornés.
 - [`controller`](crate::controller) : séquences, IF, While et parcours.
 - [`engine`](crate::engine) / [`event`](crate::event) : exécution concurrente et événements.
+
+## Fonctions natives
+
+RandomString, changeCase, dateTimeConvert, Random et RandomDate sont partagées entre Rust, JavaScript (`functions`) et les expressions `${__function(...)}`. Les formats de date suivent les règles ISO/SMART du JDK 21 avec des données locales et de fuseaux intégrées, sans Java à l’exécution. Les valeurs système sont figées au début de chaque exécution. Les appels invalides échouent explicitement. Le nom de variable facultatif enregistre le résultat pour l’utilisateur courant ; un échec annule les écritures de l’expression. Le code JavaScript n’est jamais interpolé. L’évaluation des contrôleurs reçoit désormais un UserContext mutable pour écrire les variables.

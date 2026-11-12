@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "原生函数与日期转换（无需外部服务）",
+  "variables": { "createdAt": "2024-02-29 12:30:45" },
+  "groups": [
+    {
+      "name": "函数验证",
+      "users": 2,
+      "iterations": 2,
+      "children": [
+        {
+          "type": "constant_timer",
+          "name": "函数生成等待时间",
+          "delay_ms": "${__Random(1,1,delay)}"
+        },
+        {
+          "type": "if",
+          "name": "函数条件",
+          "condition": "${__changeCase(TRUE,lower,enabled)}",
+          "children": [
+            {
+              "type": "javascript",
+              "name": "五种函数验证",
+              "timeout_ms": 2000,
+              "pre_processors": [
+                {
+                  "type": "javascript",
+                  "name": "格式转换",
+                  "timeout_ms": 2000,
+                  "script": "functions.dateTimeConvert(vars.get('createdAt'), 'yyyy-MM-dd HH:mm:ss', 'dd/MM/yyyy', 'day'); functions.RandomString(16, 'abcdef0123456789', 'requestId');"
+                }
+              ],
+              "script": "if (vars.get('day') !== '29/02/2024') throw Error('日期转换失败'); if (vars.get('requestId').length !== 16) throw Error('随机字符串长度错误'); if (vars.get('enabled') !== 'true' || vars.get('delay') !== '1') throw Error('表达式变量未传递'); const value = functions.Random('9223372036854775807', '9223372036854775807'); if (value !== '9223372036854775807') throw Error('整数精度丢失'); functions.RandomDate('', '2024-02-29', '2024-03-01', 'zh_CN', 'randomDay'); if (vars.get('randomDay') !== '2024-02-29') throw Error('随机日期错误'); log.info('用户 {}：日期 {}，请求标识 {}', ctx.userIndex, vars.get('day'), vars.get('requestId'));",
+              "post_processors": [
+                {
+                  "type": "javascript",
+                  "name": "结果检查",
+                  "timeout_ms": 2000,
+                  "script": "functions.changeCase('passed', 'UPPER', 'status'); if (!prev.isSuccessful() || vars.get('status') !== 'PASSED') throw Error('执行失败');"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

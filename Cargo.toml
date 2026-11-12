@@ -22,13 +22,14 @@ cli = ["dep:clap"]
 [dependencies]
 rmeter-core = { path = "rmeter-core" }
 rmeter-component = { path = "rmeter-component" }
+rmeter-function = { path = "rmeter-function" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 clap = { version = "4", features = ["derive"], optional = true }
 
 [workspace]
-members = [".", "rmeter-component", "rmeter-core"]
+members = [".", "rmeter-component", "rmeter-core", "rmeter-function"]
 resolver = "2"
 
 [workspace.package]

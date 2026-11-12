@@ -390,7 +390,7 @@ IF/While 的 condition 可为布尔值、变量表达式字符串或结构化条
 
 上述条件检查线程组的零起始迭代索引。IF 字符串仅展开为 true 时进入；
 While 字符串支持空条件、`LAST`，其他值仅展开为 false 时退出。
-不执行 JavaScript/Groovy，也不支持 JMeter 函数。
+不执行 JavaScript/Groovy；支持 `${__Random(...)}` 等五种原生函数，详见 [rmeter-function](rmeter-function/README.md)。
 结构化条件支持 `constant(value)`、`variable_bool(name)`、`last_sample_ok`、
 `expression(value)`、`compare(left, operator, right)`、`not(condition)`、
 `all(conditions)`、`any(conditions)`。
@@ -472,6 +472,6 @@ Rust API：HTTP 的 `post_processors` 改为 `Vec<HttpPostProcessorConfig>`；`a
 {"type":"gaussian_random_timer","name":"高斯等待","deviation_ms":100,"offset_ms":300}
 ```
 
-高斯延迟与 JMeter 实现一致：`abs(N(0,1) * deviation_ms + offset_ms)` 后截去小数，每次独立抽样。参数必须是 0–9007199254740991 的有限非负数；延迟/偏移是整数，偏差允许小数。计算结果也以此上限截断。参数支持字符串 `${pause_ms}`，在前置处理器之后读取当前用户变量；不解释 JMeter 函数或 `timer.factor` 属性。
+高斯延迟与 JMeter 实现一致：`abs(N(0,1) * deviation_ms + offset_ms)` 后截去小数，每次独立抽样。参数必须是 0–9007199254740991 的有限非负数；延迟/偏移是整数，偏差允许小数。计算结果也以此上限截断。参数支持字符串 `${pause_ms}`，在前置处理器之后读取当前用户变量；支持五种原生函数表达式，不解释 `timer.factor` 属性。
 
 执行顺序：前置处理器 → 计算并累加延迟 → 异步等待 → 采样器 → 后置处理器 → 断言。等待不计入采样开始时间和响应耗时，但计入线程组最长运行时间；停止或关闭通道可取消等待，不发请求、不产生额外采样。动态参数错误使父采样失败（`TimerError`），跳过后续阶段并遵循错误策略。禁用定时器在校验前跳过。仅使用定时器的 HTTP/JDBC 计划不需要 JavaScript worker。

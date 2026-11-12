@@ -2,7 +2,7 @@ use std::{cmp::Ordering, fmt};
 
 use crate::context::UserContext;
 
-/// Pure conditions evaluated against the current virtual user's context.
+/// Conditions evaluated against the current virtual user's context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
     Constant(bool),
@@ -65,12 +65,23 @@ impl fmt::Display for ConditionError {
 impl std::error::Error for ConditionError {}
 
 impl Condition {
-    /// Evaluate without side effects, short-circuiting `All` and `Any`.
+    /// Validate expression syntax and function arities without evaluating any branch.
+    pub fn validate(&self) -> Result<(), ConditionError> {
+        match self {
+            Self::Expression(text) => rmeter_function::Expression::cached(text)
+                .map(|_| ())
+                .map_err(|e| ConditionError::new(e.to_string())),
+            Self::Not(value) => value.validate(),
+            Self::All(values) | Self::Any(values) => values.iter().try_for_each(Self::validate),
+            _ => Ok(()),
+        }
+    }
+    /// Evaluate with transactional expression writes, short-circuiting `All` and `Any`.
     ///
     /// # Errors
     /// Returns an error for missing variables, invalid booleans, malformed templates
     /// or operands that cannot be converted for integer comparisons.
-    pub fn evaluate(&self, context: &UserContext) -> Result<bool, ConditionError> {
+    pub fn evaluate(&self, context: &mut UserContext) -> Result<bool, ConditionError> {
         Ok(match self {
             Self::Constant(value) => *value,
             Self::VariableBool(name) => {
@@ -156,7 +167,7 @@ impl From<&str> for Condition {
 }
 
 impl Operand {
-    fn value(&self, context: &UserContext) -> Result<String, ConditionError> {
+    fn value(&self, context: &mut UserContext) -> Result<String, ConditionError> {
         Ok(match self {
             Self::Literal(value) => value.clone(),
             Self::Variable(name) => variable(name, context)?,
@@ -167,7 +178,7 @@ impl Operand {
     }
 }
 
-fn variable(name: &str, context: &UserContext) -> Result<String, ConditionError> {
+fn variable(name: &str, context: &mut UserContext) -> Result<String, ConditionError> {
     match name {
         "iteration" => Ok(context.iteration.to_string()),
         "user_index" => Ok(context.user_index.to_string()),
@@ -180,22 +191,29 @@ fn variable(name: &str, context: &UserContext) -> Result<String, ConditionError>
     }
 }
 
-pub(super) fn expand(input: &str, context: &UserContext) -> Result<String, ConditionError> {
-    let mut result = String::new();
-    let mut rest = input;
-    while let Some(start) = rest.find("${") {
-        result.push_str(&rest[..start]);
-        rest = &rest[start + 2..];
-        let end = rest
-            .find('}')
-            .ok_or_else(|| ConditionError::new("unterminated condition variable"))?;
-        let name = &rest[..end];
-        if name.is_empty() || name.contains(['{', '$']) {
-            return Err(ConditionError::new("invalid condition variable"));
-        }
-        result.push_str(&variable(name, context)?);
-        rest = &rest[end + 1..];
-    }
-    result.push_str(rest);
-    Ok(result)
+pub(super) fn expand(input: &str, context: &mut UserContext) -> Result<String, ConditionError> {
+    let builtins = std::collections::HashMap::from([
+        ("iteration".to_owned(), context.iteration.to_string()),
+        ("user_index".to_owned(), context.user_index.to_string()),
+        (
+            "last_sample_ok".to_owned(),
+            context.last_sample_ok.to_string(),
+        ),
+        (
+            "JMeterThread.last_sample_ok".to_owned(),
+            context.last_sample_ok.to_string(),
+        ),
+    ]);
+    rmeter_function::Expression::cached(input)
+        .and_then(|expression| {
+            expression.evaluate_with(
+                &mut rmeter_function::FunctionContext {
+                    variables: &mut context.variables,
+                    environment: &context.function_environment,
+                    source: &mut rmeter_function::SystemSource,
+                },
+                &builtins,
+            )
+        })
+        .map_err(|error| ConditionError::new(error.to_string()))
 }

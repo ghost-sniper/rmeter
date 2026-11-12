@@ -30,10 +30,10 @@ impl<S> Controller<S> for IfController<S> {
     fn generic(&self) -> &GenericController<S> {
         &self.generic
     }
-    fn should_enter(&self, context: &UserContext) -> Result<bool, ConditionError> {
+    fn should_enter(&self, context: &mut UserContext) -> Result<bool, ConditionError> {
         self.condition.evaluate(context)
     }
-    fn before_sample(&self, context: &UserContext) -> Result<bool, ConditionError> {
+    fn before_sample(&self, context: &mut UserContext) -> Result<bool, ConditionError> {
         if self.evaluate_all {
             self.condition.evaluate(context)
         } else {

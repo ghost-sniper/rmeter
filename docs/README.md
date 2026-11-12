@@ -18,6 +18,7 @@ Generated entry points:
 | Crate | HTML file |
 | --- | --- |
 | `rmeter` | `target/doc/rmeter/index.html` |
+| `rmeter-function` | `target/doc/rmeter_function/index.html` |
 | `rmeter-core` | `target/doc/rmeter_core/index.html` |
 | `rmeter-component` | `target/doc/rmeter_component/index.html` |
 
@@ -64,3 +65,5 @@ try {
 ```
 
 Build outputs stay under the ignored `target/` directory. Do not commit them.
+
+The `rmeter-function/docs/` directory follows the same six-language guide layout.

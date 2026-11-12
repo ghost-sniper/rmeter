@@ -1,63 +1,42 @@
-use std::collections::HashMap;
+use rmeter_core::context::UserContext;
 
 use super::HttpConfigError;
 
-pub(crate) fn expand(
-    input: &str,
-    variables: &HashMap<String, String>,
-) -> Result<String, HttpConfigError> {
-    substitute(input, |name| {
-        variables
-            .get(name)
-            .cloned()
-            .ok_or_else(|| HttpConfigError::new(format!("undefined variable {name:?}")))
-    })
+pub(crate) fn expand(input: &str, context: &mut UserContext) -> Result<String, HttpConfigError> {
+    rmeter_function::Expression::cached(input)
+        .and_then(|expression| {
+            expression.evaluate(&mut rmeter_function::FunctionContext {
+                variables: &mut context.variables,
+                environment: &context.function_environment,
+                source: &mut rmeter_function::SystemSource,
+            })
+        })
+        .map_err(|error| HttpConfigError::new(error.to_string()))
 }
 
 pub(crate) fn validate(input: &str) -> Result<(), HttpConfigError> {
-    substitute(input, |_| Ok(String::new())).map(|_| ())
-}
-
-fn substitute(
-    input: &str,
-    mut value: impl FnMut(&str) -> Result<String, HttpConfigError>,
-) -> Result<String, HttpConfigError> {
-    let mut output = String::new();
-    let mut rest = input;
-    while let Some(start) = rest.find("${") {
-        output.push_str(&rest[..start]);
-        rest = &rest[start + 2..];
-        let end = rest
-            .find('}')
-            .ok_or_else(|| HttpConfigError::new("unterminated variable expression"))?;
-        let name = &rest[..end];
-        if name.is_empty() || name.contains(['{', '$']) {
-            return Err(HttpConfigError::new("invalid variable expression"));
-        }
-        output.push_str(&value(name)?);
-        rest = &rest[end + 1..];
-    }
-    output.push_str(rest);
-    Ok(output)
+    rmeter_function::Expression::cached(input)
+        .map(|_| ())
+        .map_err(|e| HttpConfigError::new(e.to_string()))
 }
 
 pub(crate) fn expand_json(
     value: &serde_json::Value,
-    variables: &HashMap<String, String>,
+    context: &mut UserContext,
 ) -> Result<serde_json::Value, HttpConfigError> {
     use serde_json::Value;
     Ok(match value {
-        Value::String(text) => Value::String(expand(text, variables)?),
+        Value::String(text) => Value::String(expand(text, context)?),
         Value::Array(values) => Value::Array(
             values
                 .iter()
-                .map(|value| expand_json(value, variables))
+                .map(|value| expand_json(value, context))
                 .collect::<Result<_, _>>()?,
         ),
         Value::Object(values) => Value::Object(
             values
                 .iter()
-                .map(|(key, value)| Ok((key.clone(), expand_json(value, variables)?)))
+                .map(|(key, value)| Ok((key.clone(), expand_json(value, context)?)))
                 .collect::<Result<_, HttpConfigError>>()?,
         ),
         other => other.clone(),

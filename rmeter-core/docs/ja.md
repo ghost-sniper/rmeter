@@ -44,3 +44,7 @@ IF 式は大文字小文字を無視した `true` のみを真とします。Whi
 - [`context`](crate::context)：ユーザー変数とサイズ制限付きログ。
 - [`controller`](crate::controller)：順次実行、IF、While、走査。
 - [`engine`](crate::engine) / [`event`](crate::event)：並行実行とイベント。
+
+## ネイティブ関数
+
+RandomString、changeCase、dateTimeConvert、Random、RandomDate は Rust、JavaScript の `functions` オブジェクト、`${__function(...)}` 式で共有します。日付パターンは JDK 21 の ISO/SMART 規則に従い、ロケールとタイムゾーンのデータを同梱するため実行時に Java は不要です。既定値は実行開始時のシステム設定です。不正な呼び出しはエラーとなります。省略可能な変数名で現在のユーザーに結果を保存し、式が失敗すると書き込みを取り消します。JavaScript ソースは式展開しません。コントローラーの評価は変数を書き込むため可変 UserContext を受け取ります。

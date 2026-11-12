@@ -1,6 +1,6 @@
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use postgres_native_tls::MakeTlsConnector;
-use std::{collections::HashMap, fmt, sync::Mutex};
+use std::{fmt, sync::Mutex};
 use tokio_postgres::{Config, config::SslMode};
 
 use super::{JdbcConfigError, JdbcConnectionConfig, config::valid_duration};
@@ -86,20 +86,29 @@ impl JdbcConnection {
 
     pub(super) fn pool(
         &self,
-        variables: &HashMap<String, String>,
+        variables: &mut rmeter_core::context::UserContext,
     ) -> Result<(Pool, MakeTlsConnector), JdbcConfigError> {
-        let expand =
+        let mut expand =
             |s: &str| template::expand(s, variables).map_err(|e| JdbcConfigError::new(e.message));
         let password = if let Some(name) = &self.config.password_env {
             Some(std::env::var(name).map_err(|_| {
                 JdbcConfigError::new(format!("missing password environment variable {name:?}"))
             })?)
         } else {
-            self.config.password.as_deref().map(expand).transpose()?
+            self.config
+                .password
+                .as_deref()
+                .map(&mut expand)
+                .transpose()?
         };
         let credentials = Credentials {
             url: expand(&self.config.url)?,
-            username: self.config.username.as_deref().map(expand).transpose()?,
+            username: self
+                .config
+                .username
+                .as_deref()
+                .map(&mut expand)
+                .transpose()?,
             password,
         };
         let mut state = self

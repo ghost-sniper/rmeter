@@ -13,7 +13,14 @@ pub enum WhileCondition {
 }
 
 impl WhileCondition {
-    fn evaluate(&self, context: &UserContext, loop_end: bool) -> Result<bool, ConditionError> {
+    /// Validate without executing functions or looking up variables.
+    pub fn validate(&self) -> Result<(), ConditionError> {
+        match self {
+            Self::Condition(condition) => condition.validate(),
+            Self::Expression(text) => Condition::Expression(text.clone()).validate(),
+        }
+    }
+    fn evaluate(&self, context: &mut UserContext, loop_end: bool) -> Result<bool, ConditionError> {
         match self {
             Self::Condition(condition) => condition.evaluate(context),
             Self::Expression(expression) => {
@@ -79,10 +86,10 @@ impl<S> Controller<S> for WhileController<S> {
     fn generic(&self) -> &GenericController<S> {
         &self.generic
     }
-    fn should_enter(&self, context: &UserContext) -> Result<bool, ConditionError> {
+    fn should_enter(&self, context: &mut UserContext) -> Result<bool, ConditionError> {
         self.condition.evaluate(context, false)
     }
-    fn should_repeat(&self, context: &UserContext) -> Result<bool, ConditionError> {
+    fn should_repeat(&self, context: &mut UserContext) -> Result<bool, ConditionError> {
         self.condition.evaluate(context, true)
     }
 }
