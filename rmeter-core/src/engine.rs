@@ -13,7 +13,7 @@ use tokio::{
 
 use crate::{
     context::UserContext,
-    controller::{ControllerError, CursorStep, ExecutionCursor},
+    controller::{ControllerError, ControllerTimeout, CursorStep, ExecutionCursor},
     event::{RunEvent, SampleEvent},
     plan::{ErrorPolicy, LoopCount, TestPlan},
     sampler::{SampleResult, Sampler},
@@ -197,6 +197,32 @@ async fn wait_for_deadline(deadline: Option<Instant>) {
     }
 }
 
+async fn wait_for_controller(remaining: Option<std::time::Duration>) {
+    match remaining {
+        Some(remaining) => tokio::time::sleep(remaining).await,
+        None => pending().await,
+    }
+}
+
+fn timeout_result(timeout: ControllerTimeout) -> SampleResult {
+    SampleResult {
+        label: timeout.controller_name,
+        started_at: timeout.started_at,
+        elapsed: timeout.elapsed,
+        success: false,
+        response_code: Some("ControllerTimeout".into()),
+        response_message: Some(format!(
+            "controller iteration {} exceeded its {} ms timeout",
+            timeout.iteration.saturating_add(1),
+            timeout.timeout.as_millis()
+        )),
+        bytes_sent: 0,
+        bytes_received: 0,
+        response_body: None,
+        assertions: Vec::new(),
+    }
+}
+
 async fn execute_user<S: Sampler>(
     plan: &TestPlan<S>,
     group_index: usize,
@@ -215,46 +241,64 @@ async fn execute_user<S: Sampler>(
     while remaining != LoopCount::Finite(0) {
         cursor.reset();
         loop {
-            let sampler =
-                match cursor
+            let step =
+                cursor
                     .step(&mut context)
                     .map_err(|error| EngineError::ControllerFailed {
                         group_name: group.name.clone(),
                         user_index,
                         error,
-                    })? {
-                    CursorStep::Sample(sampler) => sampler,
-                    CursorStep::Yield => {
-                        tokio::task::yield_now().await;
-                        continue;
+                    })?;
+            let result = match step {
+                CursorStep::Yield => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                CursorStep::Done => break,
+                CursorStep::Timeout(timeout) => {
+                    context.script_logs = Default::default();
+                    timeout_result(timeout)
+                }
+                CursorStep::Sample(sampler) => {
+                    let started_at = SystemTime::now();
+                    let started = Instant::now();
+                    context.script_logs = Default::default();
+                    let sampled = tokio::select! {
+                        biased;
+                        _ = wait_for_controller(cursor.timeout_remaining()) => None,
+                        result = sampler.sample(&mut context) => Some(result),
+                    };
+                    if let Some(timeout) = cursor.take_timeout() {
+                        timeout_result(timeout)
+                    } else {
+                        match sampled.expect("a controller timer only wakes at an active deadline")
+                        {
+                            Ok(result) => result,
+                            Err(error) => SampleResult {
+                                label: "sampler error".into(),
+                                started_at,
+                                elapsed: started.elapsed(),
+                                success: false,
+                                response_code: Some(format!("{:?}", error.kind)),
+                                response_message: Some(error.message),
+                                bytes_sent: 0,
+                                bytes_received: 0,
+                                response_body: None,
+                                assertions: Vec::new(),
+                            },
+                        }
                     }
-                    CursorStep::Done => break,
-                };
-            let started_at = SystemTime::now();
-            let started = Instant::now();
-            context.script_logs = Default::default();
-            let result = match sampler.sample(&mut context).await {
-                Ok(result) => result,
-                Err(error) => SampleResult {
-                    label: "sampler error".into(),
-                    started_at,
-                    elapsed: started.elapsed(),
-                    success: false,
-                    response_code: Some(format!("{:?}", error.kind)),
-                    response_message: Some(error.message),
-                    bytes_sent: 0,
-                    bytes_received: 0,
-                    response_body: None,
-                    assertions: Vec::new(),
-                },
+                }
             };
             context.last_sample_ok = result.success;
+            let reporting_started = Instant::now();
             events
                 .send(RunEvent::SampleCompleted(Box::new(SampleEvent::new(
                     &context, result,
                 ))))
                 .await
                 .map_err(|_| EngineError::EventsClosed)?;
+            cursor.exclude_reporting_time(reporting_started.elapsed());
 
             if !context.last_sample_ok {
                 match group.on_error {

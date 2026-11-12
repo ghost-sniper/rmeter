@@ -170,6 +170,19 @@ fn require_name(name: &str, location: &str) -> Result<(), ScriptError> {
     Ok(())
 }
 
+fn controller_timeout(milliseconds: u64) -> Result<Duration, ScriptError> {
+    let duration = Duration::from_millis(milliseconds);
+    if milliseconds > 9_007_199_254_740_991
+        || std::time::Instant::now().checked_add(duration).is_none()
+    {
+        return Err(ScriptError::Invalid(
+            "controller timeout_ms must be a nonnegative safe integer within the clock range"
+                .into(),
+        ));
+    }
+    Ok(duration)
+}
+
 // Remove disabled components before deserializing their execution configuration.
 // This also skips validation, worker compilation and child configuration scopes.
 struct Enabled<T>(Option<T>);
@@ -482,6 +495,8 @@ enum NodeConfig {
     },
     Loop {
         name: Option<String>,
+        #[serde(default)]
+        timeout_ms: u64,
         count: CountConfig,
         children: Vec<Enabled<NodeConfig>>,
     },
@@ -498,6 +513,8 @@ enum NodeConfig {
     },
     While {
         name: String,
+        #[serde(default)]
+        timeout_ms: u64,
         condition: ConditionConfig,
         children: Vec<Enabled<NodeConfig>>,
     },
@@ -697,13 +714,16 @@ impl NodeConfig {
             Self::Sequence { children: nodes } => ComponentNode::Sequence(children(nodes)?),
             Self::Loop {
                 name,
+                timeout_ms,
                 count,
                 children: nodes,
             } => {
-                if let Some(name) = name {
-                    require_name(&name, "loop")?;
+                if let Some(ref name) = name {
+                    require_name(name, "loop")?;
                 }
-                ComponentNode::Loop {
+                ComponentNode::LoopController {
+                    name: name.unwrap_or_else(|| "Loop 循环".into()),
+                    timeout: controller_timeout(timeout_ms)?,
                     count: count.into_count(),
                     children: children(nodes)?,
                 }
@@ -734,6 +754,7 @@ impl NodeConfig {
             }
             Self::While {
                 name,
+                timeout_ms,
                 condition,
                 children: nodes,
             } => {
@@ -744,6 +765,7 @@ impl NodeConfig {
                 };
                 ComponentNode::While {
                     name,
+                    timeout: controller_timeout(timeout_ms)?,
                     condition,
                     children: children(nodes)?,
                 }

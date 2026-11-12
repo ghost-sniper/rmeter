@@ -118,3 +118,5 @@ let condition = Condition::Compare {
 `StopUser`、`StopTest`、运行时限以及事件接收端关闭都保留原有处理方式。
 
 条件读取采样器对 UserContext 的修改。HTTP 响应字段若要作为条件变量，需要响应提取器或其他组件写入 variables。
+
+Loop / While now support per-iteration timeouts, including cancellation and one `ControllerTimeout` failure. See the six-language guides for JSON and Rust APIs. The root `examples/loop-timeouts.json` runs offline using the matching JavaScript worker.

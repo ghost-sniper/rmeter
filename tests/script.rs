@@ -302,6 +302,7 @@ fn loop_and_http_defaults_accept_optional_display_names_without_changing_executi
                     assert_eq!(config.settings.path.as_deref(), Some("/named"));
                 }
                 CursorStep::Yield => (),
+                CursorStep::Timeout(_) => panic!("unexpected controller timeout"),
                 CursorStep::Done => {
                     done = true;
                     break;

@@ -9,7 +9,9 @@ use crate::{
 };
 use rmeter_core::{
     context::UserContext,
-    controller::{Condition, GenericController, IfController, WhileCondition, WhileController},
+    controller::{
+        Condition, GenericController, IfController, LoopController, WhileCondition, WhileController,
+    },
     plan::{LoopCount, Node},
     sampler::{SampleError, SampleResult, Sampler},
 };
@@ -69,6 +71,12 @@ pub enum ComponentNode {
         count: LoopCount,
         children: Vec<Self>,
     },
+    LoopController {
+        name: String,
+        count: LoopCount,
+        timeout: std::time::Duration,
+        children: Vec<Self>,
+    },
     Controller {
         name: String,
         children: Vec<Self>,
@@ -83,6 +91,7 @@ pub enum ComponentNode {
         name: String,
         condition: WhileCondition,
         children: Vec<Self>,
+        timeout: std::time::Duration,
     },
 }
 /// Invalid component configuration, scope or named pool reference.
@@ -225,6 +234,20 @@ impl ComponentCompiler {
                     count,
                     children: self.scope(children, &defaults, &connections, &timers)?,
                 },
+                ComponentNode::LoopController {
+                    name,
+                    count,
+                    timeout,
+                    children,
+                } => {
+                    let mut controller = LoopController::new(
+                        name,
+                        count,
+                        self.scope(children, &defaults, &connections, &timers)?,
+                    );
+                    controller.timeout = timeout;
+                    Node::LoopController(controller)
+                }
                 ComponentNode::Controller { name, children } => {
                     Node::Controller(GenericController::new(
                         name,
@@ -252,15 +275,18 @@ impl ComponentCompiler {
                     name,
                     condition,
                     children,
+                    timeout,
                 } => {
                     condition
                         .validate()
                         .map_err(|e| ComponentConfigError(e.to_string()))?;
-                    Node::While(WhileController::new(
+                    let mut controller = WhileController::new(
                         name,
                         condition,
                         self.scope(children, &defaults, &connections, &timers)?,
-                    ))
+                    );
+                    controller.timeout = timeout;
+                    Node::While(controller)
                 }
             });
         }

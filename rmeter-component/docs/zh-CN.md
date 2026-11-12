@@ -59,3 +59,9 @@ cargo build -p rmeter-component --release --bin rmeter-js-worker
 ## 原生函数
 
 RandomString、changeCase、dateTimeConvert、Random、RandomDate 由 Rust、JavaScript 的 `functions` 对象和 `${__函数(...)}` 表达式共用。日期模式采用 JDK 21 ISO/SMART 规则，地区和时区数据内置，运行时不需要 Java。默认时区和语言在运行开始时从系统读取。非法调用明确报错；可选变量名将结果写入当前用户，表达式失败时回滚其写入。JavaScript 源码不进行表达式替换。控制器求值接口现接收可变 UserContext，以支持函数写变量。
+
+## 控制器每轮超时
+
+Loop 和 While 每轮重新计时。JSON `timeout_ms` 为非负安全整数毫秒，省略或 0 表示无限制；null、小数和表达式非法。保持 JSON version 1。预算包含嵌套子节点、定时器、处理器和采样器，排除结果通道阻塞。超时取消当前采样、退出整个控制器，并以控制器名称生成一条 `ControllerTimeout` 失败记录，未命名 Loop 显示“Loop 循环”。已完成采样和变量保留，中断采样不重复计数。嵌套控制器最早截止者优先，相同截止时间外层优先。`last_sample_ok` 设为 false，遵循线程组错误策略；Continue 从超时控制器之后继续。用户取消和线程组运行期限保留原有语义。
+
+Rust：新增 `Node::LoopController(LoopController::new(name, count, children))`；它和 `WhileController::timeout` 默认 `Duration::ZERO`，原 `Node::Loop` 保留不限时入口。`ComponentNode::LoopController` 包含 name/count/timeout/children，`ComponentNode::While` 也需提供 timeout。直接使用游标时处理 `CursorStep::Timeout`，以 `timeout_remaining()` 约束采样 future，并用 `exclude_reporting_time()` 排除上报等待。

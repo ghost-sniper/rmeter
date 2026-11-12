@@ -475,3 +475,5 @@ Rust API：HTTP 的 `post_processors` 改为 `Vec<HttpPostProcessorConfig>`；`a
 高斯延迟与 JMeter 实现一致：`abs(N(0,1) * deviation_ms + offset_ms)` 后截去小数，每次独立抽样。参数必须是 0–9007199254740991 的有限非负数；延迟/偏移是整数，偏差允许小数。计算结果也以此上限截断。参数支持字符串 `${pause_ms}`，在前置处理器之后读取当前用户变量；支持五种原生函数表达式，不解释 `timer.factor` 属性。
 
 执行顺序：前置处理器 → 计算并累加延迟 → 异步等待 → 采样器 → 后置处理器 → 断言。等待不计入采样开始时间和响应耗时，但计入线程组最长运行时间；停止或关闭通道可取消等待，不发请求、不产生额外采样。动态参数错误使父采样失败（`TimerError`），跳过后续阶段并遵循错误策略。禁用定时器在校验前跳过。仅使用定时器的 HTTP/JDBC 计划不需要 JavaScript worker。
+
+Loop / While now support per-iteration timeouts, including cancellation and one `ControllerTimeout` failure. See the six-language guides for JSON and Rust APIs. The root `examples/loop-timeouts.json` runs offline using the matching JavaScript worker.

@@ -239,3 +239,5 @@ let nodes = compile_http_nodes(vec![
 ## 原生函数
 
 JavaScript 采样器及前后置处理器统一提供 `functions.RandomString/changeCase/dateTimeConvert/Random/RandomDate`。HTTP、JDBC 和定时器已有变量字段支持 `${__函数(...)}`；用法、资源限制与 Java 日期兼容规则见 [rmeter-function](../rmeter-function/README.md)。
+
+Loop / While now support per-iteration timeouts, including cancellation and one `ControllerTimeout` failure. See the six-language guides for JSON and Rust APIs. The root `examples/loop-timeouts.json` runs offline using the matching JavaScript worker.

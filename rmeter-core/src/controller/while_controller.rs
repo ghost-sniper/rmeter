@@ -62,6 +62,8 @@ impl From<&str> for WhileCondition {
 pub struct WhileController<S> {
     pub generic: GenericController<S>,
     pub condition: WhileCondition,
+    /// Timeout for each iteration, including all children. Zero means unlimited.
+    pub timeout: std::time::Duration,
 }
 
 impl<S> WhileController<S> {
@@ -73,6 +75,7 @@ impl<S> WhileController<S> {
         Self {
             generic: GenericController::new(name, children),
             condition: condition.into(),
+            timeout: std::time::Duration::ZERO,
         }
     }
 

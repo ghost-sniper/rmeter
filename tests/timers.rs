@@ -54,13 +54,10 @@ fn timer_scopes_accumulate_independent_of_tree_order_without_leaking() {
     let children = &compiled.groups[0].children;
     assert_eq!(children.len(), 3, "timers do not become execution nodes");
     assert_eq!(timer_count(&children[0]), 2);
-    let Node::Loop {
-        children: inner, ..
-    } = &children[1]
-    else {
+    let Node::LoopController(controller) = &children[1] else {
         panic!()
     };
-    assert_eq!(timer_count(&inner[0]), 5);
+    assert_eq!(timer_count(&controller.generic.children[0]), 5);
     assert_eq!(timer_count(&children[2]), 2);
     assert_eq!(timer_count(&compiled.groups[1].children[0]), 1);
 }

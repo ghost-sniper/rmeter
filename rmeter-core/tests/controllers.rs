@@ -24,6 +24,7 @@ fn next<'a, S>(
             CursorStep::Sample(sample) => return Ok(Some(sample)),
             CursorStep::Done => return Ok(None),
             CursorStep::Yield => {}
+            CursorStep::Timeout(_) => panic!("unexpected controller timeout"),
         }
     }
     panic!("unexpected unbounded control traversal");

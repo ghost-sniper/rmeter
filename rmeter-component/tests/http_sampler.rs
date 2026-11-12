@@ -692,6 +692,9 @@ async fn compiled_requests_reuse_the_same_connection() {
                 assert!(sampler.sample(&mut context).await.unwrap().success);
             }
             rmeter_core::controller::CursorStep::Yield => tokio::task::yield_now().await,
+            rmeter_core::controller::CursorStep::Timeout(_) => {
+                panic!("unexpected controller timeout")
+            }
             rmeter_core::controller::CursorStep::Done => break,
         }
     }

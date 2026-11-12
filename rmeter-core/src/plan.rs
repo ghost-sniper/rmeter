@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use crate::controller::{GenericController, IfController, WhileController};
+use crate::controller::{GenericController, IfController, LoopController, WhileController};
 
 /// A named plan with initial variables cloned into each virtual user's context.
 #[derive(Debug)]
@@ -51,6 +51,8 @@ pub enum Node<S> {
     },
     /// Named sequential controller.
     Controller(GenericController<S>),
+    /// Named counted loop with a per-iteration timeout; legacy Loop remains unlimited.
+    LoopController(LoopController<S>),
     /// Conditional subtree.
     If(IfController<S>),
     /// Condition-controlled repetition.

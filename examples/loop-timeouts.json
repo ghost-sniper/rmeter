@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "name": "每轮超时示例",
+  "groups": [
+    {
+      "name": "单用户",
+      "on_error": "continue",
+      "children": [
+        {
+          "type": "javascript",
+          "name": "准备变量",
+          "timeout_ms": 2000,
+          "script": "vars.put('saved', 'yes');"
+        },
+        {
+          "type": "loop",
+          "name": "Loop 每轮预算",
+          "count": 3,
+          "timeout_ms": 100,
+          "children": [
+            {
+              "type": "javascript",
+              "name": "定时器中断",
+              "script": "throw Error('不应执行');",
+              "timers": [
+                {
+                  "type": "constant_timer",
+                  "name": "等待",
+                  "delay_ms": 2000
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "while",
+          "name": "While 每轮预算",
+          "condition": true,
+          "timeout_ms": 100,
+          "children": [
+            {
+              "type": "javascript",
+              "name": "定时器中断",
+              "script": "throw Error('不应执行');",
+              "timers": [
+                {
+                  "type": "constant_timer",
+                  "name": "等待",
+                  "delay_ms": 2000
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "javascript",
+          "name": "继续执行",
+          "timeout_ms": 2000,
+          "script": "if(vars.get('saved') !== 'yes') throw Error('变量丢失'); log.info('超时后继续执行');"
+        }
+      ]
+    }
+  ]
+}

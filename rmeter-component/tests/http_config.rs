@@ -175,6 +175,7 @@ fn scoped_defaults_apply_regardless_of_position_and_do_not_leak() {
                 sampler.config().settings.path.as_deref().unwrap(),
             )),
             CursorStep::Yield => continue,
+            CursorStep::Timeout(_) => panic!("unexpected controller timeout"),
             CursorStep::Done => break,
         }
     }
