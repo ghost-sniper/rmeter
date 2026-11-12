@@ -2,6 +2,7 @@ use crate::{context::UserContext, plan::Node};
 
 use super::{Condition, ConditionError, Controller, GenericController};
 
+/// Enter children when a condition is true, optionally rechecking before samples.
 #[derive(Debug)]
 pub struct IfController<S> {
     pub generic: GenericController<S>,

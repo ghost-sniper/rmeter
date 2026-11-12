@@ -90,6 +90,7 @@ pub(crate) async fn run_pre(
     true
 }
 
+/// An HTTP postprocessor: JavaScript or a native response extractor.
 #[derive(Debug, Clone)]
 pub enum HttpPostProcessorConfig {
     JavaScript(JavaScriptConfig),

@@ -1,5 +1,11 @@
 # rmeter
 
+## Crate documentation
+
+Run `cargo doc --workspace --no-deps --open` for the English API reference.
+Each crate includes guides in 简体中文、繁體中文、日本語、Français and Deutsch
+under **translations**. See [documentation build and language guide](docs/README.md).
+
 基于 Rust/Tokio 的测试执行库与可选命令行程序。根包统一提供脚本解析、
 HTTP/JDBC 组件编译、运行入口和可序列化事件。`rmeter-core` 负责调度与控制器，
 `rmeter-component` 负责 HTTP、数据库连接、采样和响应断言。

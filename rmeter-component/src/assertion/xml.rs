@@ -10,6 +10,7 @@ use sxd_xpath::{Context, Factory, Value};
 
 use super::{AssertionConfigError, MatchSelection, body_text, shorten};
 
+/// XPath string comparison, regex or node-set existence checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XmlMatcher {
     /// Compare XPath string values, without trimming or numeric coercion.
@@ -20,6 +21,7 @@ pub enum XmlMatcher {
     NotExists,
 }
 
+/// Static XPath 1.0 expression, namespace bindings and matching rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XmlAssertionConfig {
     pub name: String,

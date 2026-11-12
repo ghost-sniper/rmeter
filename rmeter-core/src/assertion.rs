@@ -1,3 +1,7 @@
+//! Transport-independent assertions evaluated against complete response input.
+//!
+//! Assertion input is separate from the potentially truncated saved response.
+
 use crate::{context::UserContext, sampler::SampleResult};
 
 /// Per-assertion diagnostics, kept separately from transport/status information.
@@ -9,6 +13,7 @@ pub struct AssertionResult {
 }
 
 impl AssertionResult {
+    /// Create a passing result without a diagnostic message.
     pub fn passed(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -17,6 +22,7 @@ impl AssertionResult {
         }
     }
 
+    /// Create a failed result with a diagnostic message.
     pub fn failed(name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -34,6 +40,8 @@ pub struct AssertionInput<'a> {
     pub unavailable_reason: Option<&'a str>,
 }
 
+/// A shareable response check that does not mutate user context.
 pub trait Assertion: Send + Sync {
+    /// Evaluate one complete input and return a named result.
     fn evaluate(&self, input: &AssertionInput<'_>, context: &UserContext) -> AssertionResult;
 }

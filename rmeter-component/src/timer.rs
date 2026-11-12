@@ -6,6 +6,7 @@ use std::{collections::HashMap, time::Duration};
 // Preserve integer milliseconds across native JSON and desktop JavaScript.
 const MAX_MS: f64 = 9_007_199_254_740_991.0;
 
+/// Milliseconds specified directly or expanded from a variable expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TimerValue {
@@ -49,6 +50,7 @@ impl TimerValue {
     }
 }
 
+/// A scoped constant or Gaussian delay applied before sampling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TimerConfig {
@@ -63,11 +65,13 @@ pub enum TimerConfig {
     },
 }
 impl TimerConfig {
+    /// Return the configured diagnostic label.
     pub fn name(&self) -> &str {
         match self {
             Self::ConstantTimer { name, .. } | Self::GaussianRandomTimer { name, .. } => name,
         }
     }
+    /// Validate names, static numbers and templates; dynamic values wait until runtime.
     pub fn validate(&self) -> Result<(), String> {
         if self.name().trim().is_empty() {
             return Err("timer name must not be empty".into());

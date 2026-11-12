@@ -107,6 +107,7 @@ fn merge_entries(
     Some(entries)
 }
 
+/// Request body representation, including safe JSON string-value substitution.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum HttpBody {
     #[default]
@@ -121,6 +122,7 @@ pub enum HttpBody {
     Json(serde_json::Value),
 }
 
+/// One HTTP request with settings, processing stages and response assertions.
 #[derive(Debug, Clone)]
 pub struct HttpRequestConfig {
     pub label: String,
@@ -156,6 +158,7 @@ impl HttpRequestConfig {
         self.post_processors.push(processor.into());
     }
 
+    /// Create a GET request with an empty body and no processing stages.
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -172,6 +175,7 @@ impl HttpRequestConfig {
         }
     }
 
+    /// Create a GET request using an absolute URL instead of scoped address fields.
     pub fn with_url(label: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             url: Some(url.into()),
@@ -180,6 +184,7 @@ impl HttpRequestConfig {
     }
 }
 
+/// Invalid static HTTP, template, processor or assertion configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpConfigError {
     pub message: String,

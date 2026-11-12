@@ -2,6 +2,7 @@ use crate::{context::UserContext, plan::Node};
 
 use super::{Condition, ConditionError, Controller, GenericController, condition::expand};
 
+/// A structured condition or string with JMeter-style While semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhileCondition {
     Condition(Condition),
@@ -49,6 +50,7 @@ impl From<&str> for WhileCondition {
     }
 }
 
+/// Repeat children while permitted, with a per-user iteration variable.
 #[derive(Debug)]
 pub struct WhileController<S> {
     pub generic: GenericController<S>,

@@ -1,3 +1,7 @@
+//! Compile mixed HTTP, PostgreSQL and JavaScript configuration trees.
+//!
+//! [`ComponentCompiler`] resolves lexical scopes, shared clients, pools and timers.
+
 use crate::http::sampler::ClientOptions;
 use crate::{
     HttpRequestConfig, HttpRequestDefaults, HttpSampler, JavaScriptConfig, JavaScriptSampler,
@@ -15,6 +19,7 @@ use std::{
     sync::Arc,
 };
 
+/// A single [`Sampler`] type wrapping HTTP, JDBC or JavaScript operations.
 #[derive(Debug, Clone)]
 pub enum ComponentSampler {
     JavaScript(Box<JavaScriptSampler>),
@@ -50,6 +55,7 @@ impl Sampler for ComponentSampler {
         }
     }
 }
+/// Mixed executable and configuration nodes before scope resolution.
 #[derive(Debug, Clone)]
 pub enum ComponentNode {
     JavaScript(JavaScriptConfig),
@@ -79,6 +85,7 @@ pub enum ComponentNode {
         children: Vec<Self>,
     },
 }
+/// Invalid component configuration, scope or named pool reference.
 #[derive(Debug)]
 pub struct ComponentConfigError(pub String);
 impl fmt::Display for ComponentConfigError {
@@ -96,9 +103,12 @@ pub struct ComponentCompiler {
     timers: Vec<crate::TimerConfig>,
 }
 impl ComponentCompiler {
+    /// Create a compiler without registered pools, clients or timers.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Register a globally visible pool; duplicate names are rejected.
+    /// Connections are established lazily when sampling.
     pub fn register_jdbc(
         &mut self,
         config: JdbcConnectionConfig,
@@ -115,6 +125,7 @@ impl ComponentCompiler {
             .insert(connection.config().variable_name.clone(), connection);
         Ok(())
     }
+    /// Validate and register a timer inherited by subsequently compiled trees.
     pub fn register_timer(
         &mut self,
         timer: crate::TimerConfig,
@@ -123,6 +134,11 @@ impl ComponentCompiler {
         self.timers.push(timer);
         Ok(())
     }
+    /// Resolve scoped configuration into execution nodes.
+    ///
+    /// # Errors
+    /// Fails for invalid components, duplicate local connection names, unknown pool
+    /// references or worker-backed validation errors.
     pub fn compile(
         &mut self,
         nodes: Vec<ComponentNode>,

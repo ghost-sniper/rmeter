@@ -1,4 +1,7 @@
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/en.md")]
+
+#[cfg(doc)]
+pub mod translations;
 
 pub mod assertion;
 pub mod component;

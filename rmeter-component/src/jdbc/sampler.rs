@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{ResponseAssertion, assertion::evaluate_assertions, http::template};
 
+/// A reusable PostgreSQL query sampler sharing a lazily initialized pool.
 #[derive(Debug, Clone)]
 pub struct JdbcSampler {
     config: JdbcSamplerConfig,

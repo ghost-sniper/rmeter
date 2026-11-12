@@ -1,5 +1,8 @@
 # rmeter-component
 
+English crate documentation and five translated guides are available through
+`cargo doc --workspace --no-deps --open`. See [documentation guide](../docs/README.md).
+
 HTTP/HTTPS 采样器、HTTP Request Defaults，以及 JSON、正文正则和 XML 三种独立断言组件。
 依赖 `rmeter-core`，可直接交给现有 `Engine` 执行。
 还提供使用 Rust 原生 PostgreSQL 驱动的 JDBC 采样器与命名连接配置组件，

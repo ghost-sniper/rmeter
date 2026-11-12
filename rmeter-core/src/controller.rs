@@ -1,3 +1,7 @@
+//! Shared controller definitions and per-user, context-aware traversal.
+//!
+//! Direct cursor callers must yield on [`CursorStep::Yield`] to keep loops cancellable.
+
 mod condition;
 mod generic_controller;
 mod if_controller;
@@ -24,6 +28,7 @@ pub struct ExecutionCursor<'a, S> {
     has_work: bool,
 }
 
+/// One traversal step: a borrowed sampler, cooperative yield, or completion.
 pub enum CursorStep<'a, S> {
     Sample(&'a S),
     /// Control traversal exhausted its cooperative work budget without a sample.
@@ -31,6 +36,7 @@ pub enum CursorStep<'a, S> {
     Done,
 }
 
+/// A named controller's condition-evaluation failure.
 #[derive(Debug)]
 pub struct ControllerError {
     pub controller_name: String,
@@ -128,6 +134,7 @@ impl<'a, S> Frame<'a, S> {
 }
 
 impl<'a, S> ExecutionCursor<'a, S> {
+    /// Start a fresh cursor over borrowed root nodes.
     pub fn new(children: &'a [Node<S>]) -> Self {
         let mut cursor = Self {
             root: children,

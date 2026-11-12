@@ -23,6 +23,7 @@ impl RegexAssertionConfig {
     }
 }
 
+/// A compiled regex evaluated against the complete UTF-8 response body.
 #[derive(Debug, Clone)]
 pub struct RegexAssertion {
     config: RegexAssertionConfig,

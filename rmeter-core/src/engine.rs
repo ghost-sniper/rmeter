@@ -1,3 +1,8 @@
+//! Tokio execution of shared plans with one task and context per virtual user.
+//!
+//! Drain the event channel concurrently. Sample failures arrive through events;
+//! [`EngineError`] represents infrastructure or control-flow failures.
+
 use std::{fmt, future::pending, sync::Arc, time::SystemTime};
 
 use tokio::{
@@ -70,6 +75,7 @@ impl std::error::Error for EngineError {
 }
 
 impl<S: Sampler + 'static> Engine<S> {
+    /// Own a plan for repeated, independent calls to [`Self::run`].
     pub fn new(plan: TestPlan<S>) -> Self {
         Self {
             plan: Arc::new(plan),

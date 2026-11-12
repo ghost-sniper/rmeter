@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+/// Response selection language executed inside the bounded worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractorKind {
@@ -18,6 +19,7 @@ pub enum ExtractorKind {
     Xpath2,
 }
 
+/// Selection expression, destination variable and extraction resource limits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtractorSettings {
@@ -74,11 +76,13 @@ impl ExtractorSettings {
         }
     }
 }
+/// An extraction language paired with its settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractorConfig {
     pub kind: ExtractorKind,
     pub settings: ExtractorSettings,
 }
+/// Validated HTTP response extractor with transactional variable updates.
 #[derive(Debug, Clone)]
 pub struct Extractor {
     config: Arc<ExtractorConfig>,

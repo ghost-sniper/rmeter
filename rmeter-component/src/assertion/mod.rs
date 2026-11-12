@@ -16,6 +16,7 @@ use rmeter_core::{
 };
 use std::fmt;
 
+/// Configuration for a JSONPath, full-body regex or XML/XPath response check.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssertionConfig {
     Json(JsonAssertionConfig),
@@ -38,6 +39,7 @@ impl From<XmlAssertionConfig> for AssertionConfig {
     }
 }
 
+/// Compilation failure identifying the assertion component and configured name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertionConfigError {
     pub component: String,
@@ -64,6 +66,7 @@ impl fmt::Display for AssertionConfigError {
 }
 impl std::error::Error for AssertionConfigError {}
 
+/// A compiled response assertion implementing the core assertion interface.
 #[derive(Debug, Clone)]
 pub enum ResponseAssertion {
     Json(JsonAssertion),
@@ -71,6 +74,7 @@ pub enum ResponseAssertion {
     Xml(XmlAssertion),
 }
 impl ResponseAssertion {
+    /// Compile expressions and validate assertion settings before sampling.
     pub fn new(config: AssertionConfig) -> Result<Self, AssertionConfigError> {
         match config {
             AssertionConfig::Json(config) => JsonAssertion::new(config)

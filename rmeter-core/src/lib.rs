@@ -1,4 +1,7 @@
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/en.md")]
+
+#[cfg(doc)]
+pub mod translations;
 
 pub mod assertion;
 pub mod context;
@@ -7,6 +10,7 @@ pub mod engine;
 pub mod event;
 pub mod plan;
 pub mod sampler;
+/// Add two unsigned integers; panics on overflow when overflow checks are enabled.
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }

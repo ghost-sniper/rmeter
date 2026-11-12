@@ -27,6 +27,7 @@ pub fn set_worker_executable(
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
+/// Synchronous script source, resource limits and optional processing stages.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JavaScriptConfig {
     pub name: String,
@@ -56,6 +57,7 @@ impl JavaScriptConfig {
     }
 }
 
+/// Invalid script configuration, syntax or worker validation failure.
 #[derive(Debug)]
 pub struct JavaScriptConfigError(pub String);
 impl fmt::Display for JavaScriptConfigError {
@@ -65,6 +67,7 @@ impl fmt::Display for JavaScriptConfigError {
 }
 impl std::error::Error for JavaScriptConfigError {}
 
+/// A script definition executed in a fresh resource-limited worker.
 #[derive(Debug, Clone)]
 pub struct JavaScriptSampler {
     config: Arc<JavaScriptConfig>,

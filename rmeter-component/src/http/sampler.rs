@@ -40,10 +40,12 @@ pub(crate) struct ClientOptions {
 }
 
 impl HttpSampler {
+    /// Validate a request with built-in defaults without sending it.
     pub fn new(config: HttpRequestConfig) -> Result<Self, HttpConfigError> {
         Self::with_defaults(config, &HttpRequestDefaults::default())
     }
 
+    /// Validate a request over supplied inherited defaults without sending it.
     pub fn with_defaults(
         config: HttpRequestConfig,
         defaults: &HttpRequestDefaults,
@@ -51,6 +53,7 @@ impl HttpSampler {
         Self::prepare(config, defaults, &mut HashMap::new())
     }
 
+    /// Return the compiled sampler's request configuration.
     pub fn config(&self) -> &HttpRequestConfig {
         &self.config
     }

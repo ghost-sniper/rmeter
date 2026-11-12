@@ -8,6 +8,7 @@ use rmeter_core::{
 use serde_json::Value;
 use serde_json_path::JsonPath;
 
+/// Cardinality and matching rules for selected JSON or XML values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MatchSelection {
     /// Require exactly one node. Never silently select the first match.
@@ -18,6 +19,7 @@ pub enum MatchSelection {
     All,
 }
 
+/// Type-preserving equality, string regex or JSONPath existence checks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonMatcher {
     /// serde_json::Value equality, preserving JSON types and array ordering.
@@ -29,6 +31,7 @@ pub enum JsonMatcher {
     NotExists,
 }
 
+/// Static JSONPath expression, matcher and selection semantics for one assertion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JsonAssertionConfig {
     pub name: String,
@@ -48,6 +51,7 @@ impl JsonAssertionConfig {
     }
 }
 
+/// A named JSON assertion's expression or matcher compilation failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonAssertionError {
     pub name: String,

@@ -1,5 +1,8 @@
 # rmeter-core
 
+English crate documentation and five translated guides are available through
+`cargo doc --workspace --no-deps --open`. See [documentation guide](../docs/README.md).
+
 执行计划、用户上下文、采样接口和异步执行引擎。
 
 ## 断言接口

@@ -1,3 +1,10 @@
+//! Strict version 1 JSON parsing and compilation into executable component plans.
+//!
+//! [`parse_script`] checks static configuration; [`load_script`] adds async UTF-8
+//! file loading. Neither sends HTTP requests nor opens database connections.
+//! JavaScript and native extractor validation require the separately deployed
+//! worker. Runtime variable values are validated when the relevant node executes.
+
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
@@ -20,6 +27,7 @@ use rmeter_core::{
 use serde::Deserialize;
 use serde_json::Value;
 
+/// File, JSON, configuration or engine failure while preparing or running a plan.
 #[derive(Debug)]
 pub enum ScriptError {
     Io {
@@ -61,6 +69,11 @@ impl From<EngineError> for ScriptError {
 
 /// Accepts UTF-8 JSON (an optional UTF-8 BOM is allowed), rejects unknown fields,
 /// and compiles static HTTP/JSONPath/regex configuration before any request runs.
+///
+/// # Errors
+/// Returns [`ScriptError::Json`] for malformed JSON or schema errors and
+/// [`ScriptError::Invalid`] for unsupported versions, invalid names or component
+/// configuration errors. Worker-backed components also validate in this step.
 pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptError> {
     let mut value: Value = serde_json::from_str(source.strip_prefix('\u{feff}').unwrap_or(source))
         .map_err(ScriptError::Json)?;
@@ -130,6 +143,11 @@ pub fn parse_script(source: &str) -> Result<TestPlan<ComponentSampler>, ScriptEr
     })
 }
 
+/// Read a UTF-8 file asynchronously, then validate it with [`parse_script`].
+///
+/// # Errors
+/// Returns [`ScriptError::Io`] with the path when reading fails, or propagates
+/// the parsing and compilation errors described by [`parse_script`].
 pub async fn load_script(
     path: impl AsRef<Path>,
 ) -> Result<TestPlan<ComponentSampler>, ScriptError> {

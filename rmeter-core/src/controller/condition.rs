@@ -22,6 +22,7 @@ pub enum Condition {
     Any(Vec<Condition>),
 }
 
+/// A literal or context-derived string used by structured comparisons.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operand {
     Literal(String),
@@ -31,6 +32,7 @@ pub enum Operand {
     LastSampleOk,
 }
 
+/// String equality or exact `i128` ordering; numeric parse failures are errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareOperator {
     Equal,
@@ -41,6 +43,7 @@ pub enum CompareOperator {
     GreaterOrEqual,
 }
 
+/// A missing variable, invalid expression or incompatible comparison operand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConditionError {
     pub message: String,
@@ -62,6 +65,11 @@ impl fmt::Display for ConditionError {
 impl std::error::Error for ConditionError {}
 
 impl Condition {
+    /// Evaluate without side effects, short-circuiting `All` and `Any`.
+    ///
+    /// # Errors
+    /// Returns an error for missing variables, invalid booleans, malformed templates
+    /// or operands that cannot be converted for integer comparisons.
     pub fn evaluate(&self, context: &UserContext) -> Result<bool, ConditionError> {
         Ok(match self {
             Self::Constant(value) => *value,

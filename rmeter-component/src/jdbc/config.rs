@@ -2,6 +2,7 @@ use crate::AssertionConfig;
 use serde_json::Value;
 use std::{fmt, time::Duration};
 
+/// Invalid PostgreSQL connection, query, limit or assertion configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JdbcConfigError {
     pub message: String,
@@ -20,6 +21,7 @@ impl fmt::Display for JdbcConfigError {
 }
 impl std::error::Error for JdbcConfigError {}
 
+/// Named PostgreSQL pool settings; credentials and URL are redacted in `Debug`.
 #[derive(Clone)]
 pub struct JdbcConnectionConfig {
     pub name: String,
@@ -63,6 +65,7 @@ impl fmt::Debug for JdbcConnectionConfig {
     }
 }
 
+/// Select row data or execute an update and report the affected row count.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum JdbcQueryType {
     #[default]
@@ -70,6 +73,7 @@ pub enum JdbcQueryType {
     Update,
 }
 
+/// A parameterized query against a named pool, with result limits and processors.
 #[derive(Debug, Clone)]
 pub struct JdbcSamplerConfig {
     pub label: String,

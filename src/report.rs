@@ -1,3 +1,10 @@
+//! Serializable event adapters and incremental sample totals.
+//!
+//! Convert a core [`RunEvent`] to [`ReportEvent`] for JSON or UI delivery. Times
+//! are Unix milliseconds, durations are floating-point milliseconds, and saved
+//! response bodies serialize as byte arrays. [`RunSummary`] counts final sample
+//! outcomes; it does not replace checking the engine's returned result.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rmeter_core::event::RunEvent;
@@ -32,6 +39,7 @@ pub enum ReportEvent {
     },
 }
 
+/// Serializable name, outcome and diagnostic for one response assertion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionReport {
     pub name: String,
@@ -81,6 +89,7 @@ fn millis(time: SystemTime) -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+/// Incremental sample totals for one run. Create a fresh summary for each run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunSummary {
     pub samples: u64,
@@ -90,6 +99,7 @@ pub struct RunSummary {
     pub finished: bool,
 }
 impl RunSummary {
+    /// Accumulate one event. Observing a sample twice counts it twice.
     pub fn observe(&mut self, event: &RunEvent) {
         match event {
             RunEvent::SampleCompleted(sample) => {
